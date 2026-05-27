@@ -10,7 +10,7 @@ def get_llm():
     """
     文本引擎：调用 DeepSeek 官方 API
     """
-    api_key = os.getenv("DEEPSEEK_API_KEY", "sk-d6f9017bee204c49a6fb03dee9dc6a0c") 
+    api_key = os.getenv("DEEPSEEK_API_KEY", "") 
     base_url = "https://api.deepseek.com/v1"
     model_name = "deepseek-chat"
     
