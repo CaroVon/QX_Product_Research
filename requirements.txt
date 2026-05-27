@@ -1,0 +1,30 @@
+# ============================================================
+# Research Agent - Core Dependencies
+# ============================================================
+
+# --- HTTP & Environment ---
+requests>=2.28.0
+python-dotenv>=1.0.0
+
+# --- LangChain Ecosystem ---
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-openai>=0.1.0
+langchain-chroma>=0.1.0
+langchain-text-splitters>=0.2.0
+
+# --- Embedding & Retrieval ---
+sentence-transformers>=2.7.0
+jieba>=0.42.1
+
+# --- External APIs ---
+tavily-python>=0.3.0
+firecrawl-py>=1.0.0
+
+# --- Report Generation ---
+markdown2>=2.4.0
+weasyprint>=60.0
+
+# --- Legacy PDF Generator (optional) ---
+# Uncomment if using the ReportLab-based pdf_generator01.py
+# reportlab>=4.0.0
