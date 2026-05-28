@@ -294,6 +294,70 @@ python tests/eval_citation.py     # 控制台输出
 - [ ] **多轮交互编辑** — 支持用户对生成内容提出修改意见并迭代
 - [ ] **PDF 中文排版优化** — 引入更丰富的中文字体支持
 - [ ] **更多检索评测指标** — 引入 NDCG、MAP 等标准检索评测指标
+- [ ] **章节任务状态追踪** — 章节撰写子任务异步化，确保 Celery 任务状态正确更新
+- [ ] **BM25 语料持久化路径统一** — 修复 Worker 进程中 BM25 语料加载路径不一致的问题
+
+---
+
+## 📅 每日工作日志 / Daily Changelog
+
+> 记录每日功能更新与待优化内容（中文 + English）。
+
+### 2026-05-28 / May 28, 2026
+
+#### ✨ 每日功能更新 / Daily Feature Updates
+
+| # | 更新内容 | 文件/模块 | 说明 |
+|---|---------|-----------|------|
+| 1 | 🐛 **修复 `name 'asyncio' is not defined` 运行时错误** | [`app/core/celery_db.py`](backend/app/core/celery_db.py:11) | `update_project_status_sync` 调用 `asyncio.run()` 但模块缺少 `import asyncio`，导致 Celery Worker 在 `STEP 5/6 build_report_markdown` 阶段崩溃。已添加 `import asyncio`。 |
+| 2 | ✅ **全流程 6 步工作流端到端验证通过** | [`app/tasks/report_workflow.py`](backend/app/tasks/report_workflow.py) | 以"高端乳制品"为主题，完整运行 6 步工作流：搜索(Tavily+Firecrawl 3 URLs) → 知识库(21 Chunks) → 大纲(6章节) → 章节撰写(DeepSeek API) → Markdown 组装(11KB) → PDF 渲染(WeasyPrint, 717KB) + 概念图生成。总耗时约 162 秒。 |
+| 3 | 🔄 **Celery Worker 进程重启 & 数据库重置** | — | 清除旧 Worker 进程，重启新 Worker；数据库重置为 `PENDING` 状态后重新提交任务，成功完成全流程。 |
+| 4 | 📁 **输出文件验证** | [`backend/outputs/`](backend/outputs/) | 确认 PDF 报告（717KB）及其配套 Markdown、HTML、概念图文件均已正确生成并存档。 |
+
+```bash
+# 本次运行输出文件清单
+backend/outputs/
+├── 高端乳制品_report_20260529_002319.md      # Markdown (11KB)
+├── 高端乳制品_report_20260529_002319.html    # HTML 中间文件
+├── 高端乳制品_report_20260529_002319.pdf     # 印刷级 PDF (717KB)
+└── images/
+    └── 高端乳制品_concept.png                 # 产品概念设计图
+```
+
+#### 🎯 每日待优化内容 / Daily Optimization Items
+
+| # | 问题描述 | 影响 | 建议修复方向 |
+|---|---------|------|-------------|
+| 1 | **BM25 语料加载失败 → 降级为纯向量检索** | 非关键，混合检索退化为纯向量检索，召回精度下降 | 统一 Worker 进程中的 `bm25_db/docs.pkl` 持久化路径，确保 `vector_store.py` 中的 `save_bm25_corpus()` 写入位置与 `retriever.py` 中 `retrieve()` 读取位置一致 |
+| 2 | **章节撰写子任务状态未正确更新** | 6个章节撰写任务在数据库中始终为 `PENDING`，无法区分已完成/进行中 | `report_workflow.py` 中 `write_single_section` 以同步方式直接调用，应改为通过 `send_task()` 异步投递，并在 Celery 回调中更新 `section_tasks` 状态 |
+| 3 | **数据库 CHECK 约束使用大写枚举值** | 手动 SQL 更新易因大小写错误触发 `CHECK constraint failed` | 建议在 `ProjectStatus` 枚举中同时支持大小写不敏感解析，或统一在应用层强制大写转换 |
+| 4 | **`build_report_markdown` 中的 `asyncio.run()` 开销** | 每次调用都新建事件循环，高频场景可能有性能损耗 | 考虑在 Worker 启动时创建全局事件循环，或改用 `nest_asyncio` 补丁 |
+
+---
+
+<!-- ============================================================ -->
+<!--  ENGLISH VERSION (每日工作日志 / Daily Changelog) -->
+<!-- ============================================================ -->
+
+### May 28, 2026 — Daily Changelog (English)
+
+#### ✨ Feature Updates
+
+| # | Update | Module | Details |
+|---|--------|--------|---------|
+| 1 | 🐛 **Fixed `name 'asyncio' is not defined` runtime error** | [`app/core/celery_db.py`](backend/app/core/celery_db.py:11) | `update_project_status_sync()` called `asyncio.run()` without importing `asyncio`, causing the Celery Worker to crash at `STEP 5/6 (build_report_markdown)`. Fixed by adding `import asyncio` at line 11. |
+| 2 | ✅ **End-to-end 6-step workflow verified** | [`app/tasks/report_workflow.py`](backend/app/tasks/report_workflow.py) | Successfully ran the full workflow on topic "高端乳制品" (High-end Dairy Products): Search (Tavily+Firecrawl, 3 URLs crawled) → Knowledge Base (21 chunks) → Outline (6 sections) → Section Writing (DeepSeek API) → Markdown Assembly (11KB) → PDF Rendering via WeasyPrint (717KB) + Concept Image. Total time: ~162s. |
+| 3 | 🔄 **Celery Worker restart & DB reset** | — | Killed stale Worker processes, launched a fresh Worker, reset DB project status to `PENDING`, re-submitted the task, and completed the full pipeline. |
+| 4 | 📁 **Output file verification** | [`backend/outputs/`](backend/outputs/) | Confirmed that the PDF report (717KB), Markdown, HTML, and concept image were correctly generated and archived. |
+
+#### 🎯 Optimization Items
+
+| # | Issue | Impact | Suggested Fix |
+|---|-------|--------|---------------|
+| 1 | **BM25 corpus load failure → falls back to vector-only retrieval** | Non-critical; hybrid retrieval degrades to pure vector search, reducing recall precision | Unify the BM25 persistence path so `save_bm25_corpus()` in `vector_store.py` writes to the same location that `retrieve()` in `retriever.py` reads from within the Worker process |
+| 2 | **Section writing subtask status not updated** | All 6 section-writing tasks remain `PENDING` in the DB instead of `COMPLETED` | Change synchronous `write_single_section` calls in `report_workflow.py` to async Celery `send_task()` invocations, updating `section_tasks` status via callbacks |
+| 3 | **DB CHECK constraints use uppercase enum values** | Manual SQL updates risk `CHECK constraint failed` on case mismatch | Add case-insensitive parsing in `ProjectStatus` enum or enforce uppercase conversion at the application layer |
+| 4 | **`asyncio.run()` overhead in `build_report_markdown`** | Creates a new event loop on each call; potential performance issue under high frequency | Use a global event loop initialized at Worker startup, or patch with `nest_asyncio` |
 
 ---
 
