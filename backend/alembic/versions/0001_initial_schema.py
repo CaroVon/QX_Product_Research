@@ -1,10 +1,11 @@
-"""Alembic 迁移脚本模板"""
+"""Alembic 迁移脚本 v0001 —— 初始表结构"""
 # type: ignore
 
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+
 
 # revision identifiers, used by Alembic.
 revision: str = "0001"
@@ -45,10 +46,15 @@ def upgrade() -> None:
         sa.Column("topic", sa.String(500), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("PENDING", "PROCESSING", "COMPLETED", "FAILED", name="project_status"),
-            server_default="PENDING",
+            sa.Enum(
+                "PREPARING_DATA", "WAITING_OUTLINE_APPROVAL",
+                "DRAFTING", "COMPLETED", "FAILED",
+                name="project_status",
+            ),
+            server_default="PREPARING_DATA",
             nullable=False,
         ),
+        sa.Column("outline_content", sa.Text(), nullable=True, comment="暂存大纲 Markdown（等待用户确认）"),
         sa.Column("pdf_path", sa.String(1000), nullable=True),
         sa.Column("md_path", sa.String(1000), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
@@ -121,6 +127,23 @@ def upgrade() -> None:
     op.create_index(op.f("ix_documents_id"), "documents", ["id"], unique=False)
     op.create_index(op.f("ix_documents_project_id"), "documents", ["project_id"], unique=False)
 
+    # document_blocks 表（面向 Tiptap 块级编辑器的细粒度存储）
+    op.create_table(
+        "document_blocks",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("project_id", sa.UUID(), nullable=False),
+        sa.Column("section_title", sa.String(500), nullable=False, comment="归属的章节标题"),
+        sa.Column("order_index", sa.Integer(), server_default="0", nullable=False, comment="全局排序序号"),
+        sa.Column("content", sa.Text(), nullable=False, comment="块内容（Markdown 格式）"),
+        sa.Column("citations", sa.Text(), nullable=True, comment="引用映射（JSON 格式）"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
+        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_document_blocks_id"), "document_blocks", ["id"], unique=False)
+    op.create_index(op.f("ix_document_blocks_project_id"), "document_blocks", ["project_id"], unique=False)
+
     # ─── 插入默认管理员用户（UUID 全零的演示用户） ──────────
     op.execute(
         """
@@ -140,6 +163,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """回滚所有表"""
+    op.drop_table("document_blocks")
     op.drop_table("documents")
     op.drop_table("tasks")
     op.drop_table("projects")

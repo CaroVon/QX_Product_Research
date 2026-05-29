@@ -8,9 +8,7 @@ import {
 } from 'lucide-react'
 
 const navItems = [
-  { to: '/', label: '控制台', icon: LayoutDashboard },
-  { to: '/projects', label: '项目列表', icon: FileText },
-  { to: '/reports', label: '报告阅读', icon: BookOpen },
+  { to: '/', label: '控制台', icon: LayoutDashboard, end: true },
 ]
 
 export function Sidebar() {

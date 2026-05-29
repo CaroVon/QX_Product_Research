@@ -8,9 +8,11 @@ API v1 主路由聚合器
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import projects
+from app.api.v1.endpoints import editor
 
 # ─── 创建 v1 主路由 ───────────────────────────────────────────
 router = APIRouter(prefix="/api/v1")
 
 # ─── 注册子路由 ───────────────────────────────────────────────
 router.include_router(projects.router)
+router.include_router(editor.router)

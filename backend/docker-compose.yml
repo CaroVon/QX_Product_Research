@@ -22,6 +22,14 @@ volumes:
 services:
 
   # ============================================================
+  # 0. App Engine 引擎服务（需要 research_agent/app/ 目录存在）
+  # ============================================================
+  # 说明：research_agent/app/ 是核心引擎目录（planner/search/crawler/report/rag/llm），
+  # 通过 volume mount 挂载到 /app/engine，backend/app/__init__.py 会通过
+  # __path__ 扩展将其合并到 app 命名空间下。
+  # 本地开发时则通过相对路径直接找到 ../../app 目录。
+
+  # ============================================================
   # 1. PostgreSQL 数据库
   # ============================================================
   postgres:
@@ -83,8 +91,11 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      # 挂载应用代码（开发模式热更新）
+      # 挂载 backend/app/ 应用代码（开发模式热更新）
       - ./app:/app/app
+      # 挂载 engine 引擎目录（research_agent/app/ → /app/engine）
+      # 使得 app.planner / app.search / app.crawler / app.report / app.rag / app.llm 可导入
+      - ../app:/app/engine
       # 持久化数据卷
       - chroma-data:/app/chroma_db
       - bm25-data:/app/bm25_db
@@ -123,6 +134,8 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      # 挂载 engine 引擎目录（与 api 服务保持一致）
+      - ../app:/app/engine
       - chroma-data:/app/chroma_db
       - bm25-data:/app/bm25_db
       - outputs-data:/app/outputs

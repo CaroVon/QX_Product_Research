@@ -32,10 +32,10 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
 
     try {
       const result = await createProject.mutateAsync({ topic: topic.trim() })
-      // ─── 创建成功后跳转到进度页面 ────────────────────────────
+      // ─── 创建成功后直接跳转到工作台 ────────────────────────────
       onOpenChange(false)
       setTopic('')
-      navigate(`/projects/${result.project.id}/progress`)
+      navigate(`/projects/${result.project.id}/workspace`)
     } catch {
       // 错误由 React Query 的 onError 或 UI 层处理
     }

@@ -28,15 +28,17 @@ export function Badge({ className, variant = 'default', ...props }: BadgeProps) 
 
 /** 项目状态对应的 Badge 变体 */
 const projectBadgeVariant: Record<ProjectStatusEnum, BadgeProps['variant']> = {
-  pending: 'warning',
-  processing: 'default',
+  preparing_data: 'default',
+  waiting_outline_approval: 'warning',
+  drafting: 'default',
   completed: 'success',
   failed: 'destructive',
 }
 
 const projectBadgeLabel: Record<ProjectStatusEnum, string> = {
-  pending: '待处理',
-  processing: '生成中',
+  preparing_data: '资料准备中',
+  waiting_outline_approval: '待确认大纲',
+  drafting: '撰写中',
   completed: '已完成',
   failed: '失败',
 }

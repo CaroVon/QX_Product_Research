@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import json
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from app.core.config import get_settings
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.project import Project, ProjectStatus
 from app.models.document import Document
+from app.models.document_block import DocumentBlock
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +205,83 @@ async def save_document(
 
 
 # ================================================================
+# DocumentBlock 工具函数
+# ================================================================
+
+async def save_document_block(
+    project_id: str,
+    section_title: str,
+    content: str,
+    citations: dict[str, str] | None = None,
+    order_index: int = 0,
+) -> None:
+    """
+    保存或更新文档块（DocumentBlock）。
+    如果某章节标题+order_index 的组合已存在，则更新内容；
+    否则新增一条 DocumentBlock 记录。
+
+    这是 Tiptap 块级编辑器的核心数据写入函数——
+    Celery Worker 每完成一个章节的一个逻辑块，就调用此函数保存。
+    """
+    pid = uuid.UUID(project_id)
+    json_citations = json.dumps(citations, ensure_ascii=False) if citations else "{}"
+
+    async with get_celery_db() as db:
+        # 查找是否已存在相同 section_title + order_index 的块
+        existing = await db.execute(
+            select(DocumentBlock).where(
+                DocumentBlock.project_id == pid,
+                DocumentBlock.section_title == section_title,
+                DocumentBlock.order_index == order_index,
+            )
+        )
+        # 使用 .first() 而非 scalar_one_or_none()，避免存在重复行时抛出 MultipleResultsFound
+        block = existing.first()
+
+        if block:
+            # 更新已有块的内容
+            block.content = content
+            block.citations = json_citations
+            logger.info(
+                "[DB] 更新文档块 | project=%s | section=%s | order=%d",
+                project_id, section_title, order_index,
+            )
+        else:
+            # 创建新的文档块
+            block = DocumentBlock(
+                project_id=pid,
+                section_title=section_title,
+                content=content,
+                citations=json_citations,
+                order_index=order_index,
+            )
+            db.add(block)
+            logger.info(
+                "[DB] 新增文档块 | project=%s | section=%s | order=%d",
+                project_id, section_title, order_index,
+            )
+
+
+async def update_project_outline(
+    project_id: str,
+    outline_content: str,
+) -> None:
+    """在 Project 表中暂存大纲内容（等待用户确认）"""
+    pid = uuid.UUID(project_id)
+    async with get_celery_db() as db:
+        result = await db.execute(select(Project).where(Project.id == pid))
+        project = result.scalar_one_or_none()
+        if project is None:
+            logger.warning("未找到项目: %s", project_id)
+            return
+        project.outline_content = outline_content
+        logger.info(
+            "[DB] 保存大纲 | project=%s | len=%d",
+            project_id, len(outline_content),
+        )
+
+
+# ================================================================
 # 同步包装器（供 Celery Task 直接调用）
 # ================================================================
 
@@ -245,9 +324,41 @@ def update_project_status_sync(
     asyncio.run(
         update_project_status(
             project_id=project_id,
-            status=status or ProjectStatus.PROCESSING,
+            status=status or ProjectStatus.PREPARING_DATA,
             error_message=error_message,
             pdf_path=pdf_path,
             md_path=md_path,
+        )
+    )
+
+
+def save_document_block_sync(
+    project_id: str,
+    section_title: str,
+    content: str,
+    citations: dict[str, str] | None = None,
+    order_index: int = 0,
+) -> None:
+    """同步包装：保存/更新文档块"""
+    asyncio.run(
+        save_document_block(
+            project_id=project_id,
+            section_title=section_title,
+            content=content,
+            citations=citations,
+            order_index=order_index,
+        )
+    )
+
+
+def update_project_outline_sync(
+    project_id: str,
+    outline_content: str,
+) -> None:
+    """同步包装：保存大纲"""
+    asyncio.run(
+        update_project_outline(
+            project_id=project_id,
+            outline_content=outline_content,
         )
     )

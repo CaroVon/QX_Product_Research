@@ -53,8 +53,8 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
 
-# 创建输出目录（挂载卷）
-RUN mkdir -p /app/outputs /app/chroma_db /app/bm25_db
+# 创建输出目录（挂载卷）和引擎目录（挂载 research_agent/app/）
+RUN mkdir -p /app/outputs /app/chroma_db /app/bm25_db /app/engine
 
 # ─── 健康检查 ───────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

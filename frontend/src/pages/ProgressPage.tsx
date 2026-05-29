@@ -51,7 +51,8 @@ export function ProgressPage() {
 
   const isCompleted = data.project_status === 'completed'
   const isFailed = data.project_status === 'failed'
-  const isProcessing = data.project_status === 'processing'
+  // processing 阶段已拆分为 preparing_data / waiting_outline_approval / drafting
+  const isProcessing = data.project_status === 'preparing_data' || data.project_status === 'drafting'
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">
@@ -96,7 +97,7 @@ export function ProgressPage() {
               您可以查看完整的行业研究报告。
             </p>
           </div>
-          <Link to={`/projects/${data.project_id}/report`}>
+          <Link to={`/projects/${data.project_id}/workspace`}>
             <Button className="gap-2">
               查看报告
               <ArrowRight className="h-4 w-4" />

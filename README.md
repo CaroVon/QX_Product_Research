@@ -464,6 +464,9 @@ python tests/eval_citation.py     # 控制台输出
 | 3 | 🌐 **Vite + React 前端完整实现** | [`frontend/`](frontend/) | 3 个核心页面：Dashboard（项目创建与列表）、Progress Tracker（6步管道可视化）、Report Reader（Markdown 渲染 + 引用溯源气泡）。 |
 | 4 | ⚡ **FastAPI + Celery 后端完整实现** | [`backend/`](backend/) | 4 个项目 REST API 端点，5 个 Celery 异步任务模块，SQLAlchemy ORM + Alembic 迁移，Redis 任务队列。 |
 | 5 | 🚀 **SSH 隧道访问说明** | — | 由于 AutoDL 服务器仅暴露 SSH 端口 22，需通过 `ssh -L` 隧道将本地 5173/8000 端口映射到服务器才能从本地浏览器访问。 |
+| 6 | 🐛 **修复 SQLite `NOW()` 函数不兼容问题** | [`report_workflow.py`](backend/app/tasks/report_workflow.py) | SQLite 不支持 `NOW()` 函数，导致 `_update_section_task_status_sync` 在执行 raw SQL 时抛出 `sqlite3.OperationalError`。修复：将 `NOW()` 替换为 Python `datetime.now(timezone.utc)` 参数绑定。 |
+| 7 | 🐛 **修复 `save_document_block` "Multiple rows" 错误** | [`celery_db.py`](backend/app/core/celery_db.py), [`projects.py`](backend/app/api/v1/endpoints/projects.py) | 当 `approve-outline` 因失败重试而被重复调用时，旧占位 DocumentBlock 产生重复 `(section_title, order_index)` 记录。`scalar_one_or_none()` 抛出 `MultipleResultsFound`。修复：[`celery_db.py`](backend/app/core/celery_db.py:238) 改用 `.first()` 静默取首行；[`projects.py`](backend/app/api/v1/endpoints/projects.py:282) 在创建新占位块前先 `DELETE` 旧记录。 |
+| 8 | ✅ **"人体工学椅"项目全流程验证通过** | [`backend/outputs/`](backend/outputs/) | 在修复上述 2 个 Bug 后，重置失败项目并重新运行，完整通过 6 步工作流，成功生成 PDF 报告。 |
 
 #### 🎯 每日待优化内容 / Daily Optimization Items
 
@@ -474,7 +477,6 @@ python tests/eval_citation.py     # 控制台输出
 | 3 | **数据库 CHECK 约束使用大写枚举值** | 手动 SQL 更新易失败 | 在应用层统一强制大写转换 |
 | 4 | **`build_report_markdown` 中的 `asyncio.run()` 开销** | 每次调用都新建事件循环 | 使用全局事件循环或 `nest_asyncio` |
 | 5 | **Firecrawl 百度百科抓取失败** | 国内网站可访问性受限 | 添加备用爬虫机制或使用本地 SearXNG 替代 |
-
 ---
 
 ### 2026-05-28 / May 28, 2026
@@ -970,6 +972,9 @@ python tests/eval_citation.py     # Console output
 | 3 | 🌐 **Complete Vite + React frontend** | [`frontend/`](frontend/) | 3 core pages: Dashboard, Progress Tracker, Report Reader with citation popovers. |
 | 4 | ⚡ **Complete FastAPI + Celery backend** | [`backend/`](backend/) | 4 REST API endpoints, 5 Celery task modules, SQLAlchemy ORM + Alembic, Redis queue. |
 | 5 | 🚀 **SSH tunnel access documented** | — | Since AutoDL only exposes port 22, users must run `ssh -L` to access the web UI locally. |
+| 6 | 🐛 **Fixed SQLite `NOW()` incompatibility** | [`report_workflow.py`](backend/app/tasks/report_workflow.py) | SQLite does not support the `NOW()` SQL function, causing `sqlite3.OperationalError` in `_update_section_task_status_sync`. Fix: replaced `NOW()` with Python `datetime.now(timezone.utc)` parameter binding. |
+| 7 | 🐛 **Fixed `save_document_block` "Multiple rows" error** | [`celery_db.py`](backend/app/core/celery_db.py), [`projects.py`](backend/app/api/v1/endpoints/projects.py) | When `approve-outline` is called multiple times (e.g., after failure+retry), old placeholder DocumentBlocks create duplicate `(section_title, order_index)` rows. `scalar_one_or_none()` throws `MultipleResultsFound`. Fix: [`celery_db.py:238`](backend/app/core/celery_db.py:238) switched to `.first()`; [`projects.py:282`](backend/app/api/v1/endpoints/projects.py:282) added `DELETE` of old records before inserting new placeholders. |
+| 8 | ✅ **"Ergonomic Chair" E2E verification passed** | [`backend/outputs/`](backend/outputs/) | After fixing both bugs above, the previously failed "人体工学椅" project was reset and re-run, successfully completing the full 6-step pipeline and generating the PDF report. |
 
 #### Optimization Items
 

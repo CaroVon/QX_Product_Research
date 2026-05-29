@@ -14,19 +14,14 @@ interface ProjectCardProps {
  * 在控制台/项目列表中展示单个项目的信息缩略
  */
 export function ProjectCard({ project }: ProjectCardProps) {
-  const isProcessing = project.status === 'processing'
+  const isProcessing = project.status === 'preparing_data' || project.status === 'waiting_outline_approval' || project.status === 'drafting'
   const isCompleted = project.status === 'completed'
   const isFailed = project.status === 'failed'
+  const isAwaitingApproval = project.status === 'waiting_outline_approval'
 
   return (
     <Link
-      to={
-        isCompleted
-          ? `/projects/${project.id}/report`
-          : isFailed
-            ? `/projects/${project.id}/progress`
-            : `/projects/${project.id}/progress`
-      }
+      to={`/projects/${project.id}/workspace`}
       className={cn(
         'group relative flex flex-col gap-3 rounded-xl border bg-card p-5 transition-all duration-200',
         'hover:shadow-md hover:border-primary/20',
