@@ -55,8 +55,12 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
     logger.info("[TASK] 开始数据采集 | project_id=%s", project_id)
 
     # ─── 1. 从数据库获取主题 ──────────────────────────────────
+    import uuid as _uuid
     from sqlalchemy import create_engine
     from app.models.project import Project
+
+    # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
+    project_id_hex = _uuid.UUID(project_id).hex
 
     settings = self.settings
     sync_engine = create_engine(settings.DATABASE_URL_SYNC)
@@ -65,7 +69,7 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
         from sqlalchemy import text
         result = conn.execute(
             text("SELECT topic FROM projects WHERE id = :pid"),
-            {"pid": project_id},
+            {"pid": project_id_hex},
         )
         row = result.fetchone()
         if row is None:

@@ -52,14 +52,19 @@ def generate_outline_task(self: WritingTask, project_id: str) -> str:
     logger.info("[TASK] 生成大纲 | project_id=%s", project_id)
 
     # 从数据库获取 topic
+    import uuid as _uuid
     from sqlalchemy import create_engine, text
+
+    # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
+    project_id_hex = _uuid.UUID(project_id).hex
+
     settings = self.settings
     engine = create_engine(settings.DATABASE_URL_SYNC)
 
     with engine.connect() as conn:
         result = conn.execute(
             text("SELECT topic FROM projects WHERE id = :pid"),
-            {"pid": project_id},
+            {"pid": project_id_hex},
         )
         row = result.fetchone()
         if row is None:
@@ -121,13 +126,18 @@ def write_single_section(
     os.environ["DEEPSEEK_BASE_URL"] = settings.DEEPSEEK_BASE_URL
 
     # ─── 2. 从数据库获取 topic ────────────────────────────────
+    import uuid as _uuid
     from sqlalchemy import create_engine, text
+
+    # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
+    project_id_hex = _uuid.UUID(project_id).hex
+
     engine = create_engine(settings.DATABASE_URL_SYNC)
 
     with engine.connect() as conn:
         result = conn.execute(
             text("SELECT topic FROM projects WHERE id = :pid"),
-            {"pid": project_id},
+            {"pid": project_id_hex},
         )
         row = result.fetchone()
         if row is None:
