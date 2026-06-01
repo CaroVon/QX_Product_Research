@@ -8,9 +8,19 @@ FastAPI 应用入口工厂
 from __future__ import annotations
 
 import os
+import sys
+import asyncio
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
+
+# ─── Windows asyncio 兼容性修复 ─────────────────────────────────
+if sys.platform == "win32":
+    try:
+        from asyncio import WindowsSelectorEventLoopPolicy
+        asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+    except ImportError:
+        pass
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +28,8 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
-from app.core.database import engine, Base
+from app.core.database import engine
+from app.models import Base
 from app.api.v1.router import router as v1_router
 
 # ─── 日志配置 ─────────────────────────────────────────────────
@@ -76,7 +87,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
-        description="AI 行业研究 Agent —— 高并发异步 API 服务\n\n"
+        description="AI 产品分析 Agent —— 高并发异步 API 服务\n\n"
         "支持异步任务队列、混合检索增强生成（RAG）、多模态生图、PDF 渲染",
         lifespan=lifespan,
         docs_url="/docs",          # Swagger UI

@@ -17,7 +17,7 @@ from pydantic import Field, PostgresDsn, RedisDsn
 
 class Settings(BaseSettings):
     # ─── 应用基础 ────────────────────────────────────────────────
-    APP_NAME: str = "Research Agent API"
+    APP_NAME: str = "Product Analysis Agent API"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = Field(default=False)
 
@@ -64,8 +64,10 @@ class Settings(BaseSettings):
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     # ─── Celery ─────────────────────────────────────────────────
-    CELERY_BROKER_URL: str = Field(default="redis://redis:6379/1")
-    CELERY_RESULT_BACKEND: str = Field(default="redis://redis:6379/2")
+    # 本地开发未设置时将使用 memory:// 传输（无需 Redis）
+    # 配置这些值以连接 Redis（Docker 部署时请设置）
+    CELERY_BROKER_URL: str = Field(default="")
+    CELERY_RESULT_BACKEND: str = Field(default="")
 
     # ─── 文件存储 ────────────────────────────────────────────────
     # 报告输出目录（本地开发用 ./outputs）
@@ -86,6 +88,15 @@ class Settings(BaseSettings):
     # BM25_PERSIST_DIR_TEMPLATE: str = "/app/bm25_db/{tenant_id}"
     CHROMA_PERSIST_DIR: str = Field(default="./chroma_db")
     BM25_PERSIST_DIR: str = Field(default="./bm25_db")
+
+    # ─── 硅基流动 (SiliconFlow) 图像生成 ─────────────────────────
+    SILICONFLOW_API_KEY: str = Field(default="")
+    SILICONFLOW_IMAGE_MODEL: str = Field(default="black-forest-labs/FLUX.1-schnell")
+    CONCEPT_IMAGE_WIDTH: str = Field(default="1024")
+    CONCEPT_IMAGE_HEIGHT: str = Field(default="576")
+
+    # ─── Embedding 模型路径 ──────────────────────────────────────
+    EMBEDDING_MODEL_PATH: str = Field(default="BAAI/bge-small-zh-v1.5")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

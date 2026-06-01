@@ -44,7 +44,7 @@ class WritingTask(Task):
 )
 def generate_outline_task(self: WritingTask, project_id: str) -> str:
     """
-    第3步：生成研报大纲
+    第3步：生成分析报告大纲
     —— 封装原有的 outline_generator.py
 
     返回 6 大固定章节的 Markdown 大纲文本。
@@ -53,13 +53,14 @@ def generate_outline_task(self: WritingTask, project_id: str) -> str:
 
     # 从数据库获取 topic
     import uuid as _uuid
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
+    from app.core.celery_db import get_sync_engine
 
     # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
     project_id_hex = _uuid.UUID(project_id).hex
 
     settings = self.settings
-    engine = create_engine(settings.DATABASE_URL_SYNC)
+    engine = get_sync_engine()
 
     with engine.connect() as conn:
         result = conn.execute(
@@ -127,12 +128,13 @@ def write_single_section(
 
     # ─── 2. 从数据库获取 topic ────────────────────────────────
     import uuid as _uuid
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
+    from app.core.celery_db import get_sync_engine
 
     # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
     project_id_hex = _uuid.UUID(project_id).hex
 
-    engine = create_engine(settings.DATABASE_URL_SYNC)
+    engine = get_sync_engine()
 
     with engine.connect() as conn:
         result = conn.execute(

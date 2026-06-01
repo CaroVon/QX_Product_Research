@@ -58,12 +58,13 @@ def build_report_markdown(
 
     # ─── 1. 从数据库获取 topic ────────────────────────────────
     import uuid as _uuid
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
+    from app.core.celery_db import get_sync_engine
 
     # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
     project_id_hex = _uuid.UUID(project_id).hex
 
-    engine = create_engine(settings.DATABASE_URL_SYNC)
+    engine = get_sync_engine()
 
     with engine.connect() as conn:
         result = conn.execute(

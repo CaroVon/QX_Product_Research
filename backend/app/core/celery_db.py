@@ -9,10 +9,13 @@ Celery 任务内部使用的数据库工具函数
 
 from __future__ import annotations
 
+import os
+import sys
 import asyncio
 import uuid
 import json
 import logging
+import tempfile
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -22,7 +25,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, event
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.models.task import Task, TaskStatus, TaskType
@@ -32,8 +36,18 @@ from app.models.document_block import DocumentBlock
 
 logger = logging.getLogger(__name__)
 
+# ─── Windows asyncio 兼容性修复 ─────────────────────────────────
+# 在 Windows 上，Python 3.8+ 默认使用 ProactorEventLoop，
+# 该事件循环不支持 subprocess（Celery 子任务会用到），
+# 因此显式设置为 SelectorEventLoop
+if sys.platform == "win32":
+    try:
+        from asyncio import WindowsSelectorEventLoopPolicy
+        asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+    except ImportError:
+        pass  # Python < 3.8 没有这个方法，忽略
+
 # ─── 为 Celery Worker 创建独立的异步引擎 ──────────────────────
-# 注意：Worker 与 FastAPI 是不同进程，不能共享 engine
 settings = get_settings()
 celery_engine = create_async_engine(
     settings.DATABASE_URL_ASYNC,
@@ -46,6 +60,55 @@ CeleryAsyncSession = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+
+@event.listens_for(celery_engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    """SQLite 连接时自动启用 WAL 模式和 foreign key 约束"""
+    if "sqlite" in str(settings.DATABASE_URL_ASYNC):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
+
+
+# ─── 为 Celery Worker 创建共享的同步引擎（避免每个 task 重复创建）─
+# 注意：同步引擎用于简单的查询操作（获取 topic 等）
+_sync_engine = None
+
+def get_sync_engine():
+    """获取共享的同步数据库引擎（延迟初始化，线程安全）"""
+    global _sync_engine
+    if _sync_engine is None:
+        sync_url = settings.DATABASE_URL_SYNC
+        if "sqlite" in sync_url:
+            # SQLite 需要特殊配置以支持多线程访问
+            _sync_engine = create_engine(
+                sync_url,
+                connect_args={"check_same_thread": False} if "sqlite" in sync_url else {},
+                poolclass=NullPool,  # SQLite 不适合连接池
+            )
+        else:
+            _sync_engine = create_engine(
+                sync_url,
+                pool_size=3,
+                max_overflow=5,
+                pool_pre_ping=True,
+            )
+    return _sync_engine
+
+
+# ─── 平台感知的临时目录 ───────────────────────────────────
+def _get_temp_dir() -> str:
+    """获取平台感知的临时目录路径"""
+    return settings.OUTPUT_DIR or tempfile.gettempdir()
+
+
+def get_crawled_data_path(project_id: str) -> str:
+    """获取项目爬取数据的暂存文件路径（跨平台兼容）"""
+    temp_dir = _get_temp_dir()
+    os.makedirs(temp_dir, exist_ok=True)
+    return os.path.join(temp_dir, f"crawled_data_{project_id}.json")
 
 
 @asynccontextmanager
@@ -116,12 +179,20 @@ async def update_task_status(
 
 async def update_project_status(
     project_id: str,
-    status: ProjectStatus,
+    status: ProjectStatus | None = None,
     error_message: str | None = None,
     pdf_path: str | None = None,
     md_path: str | None = None,
 ) -> None:
-    """更新项目整体状态"""
+    """
+    更新项目整体状态。
+
+    参数:
+        status: 新的项目状态（None 表示不更新状态字段）
+        error_message: 错误信息
+        pdf_path: PDF 文件路径
+        md_path: Markdown 文件路径
+    """
     pid = uuid.UUID(project_id)
     async with get_celery_db() as db:
         result = await db.execute(select(Project).where(Project.id == pid))
@@ -130,7 +201,8 @@ async def update_project_status(
             logger.warning("未找到项目: %s", project_id)
             return
 
-        project.status = status
+        if status is not None:
+            project.status = status
         if error_message:
             project.error_message = error_message[:1000]
         if pdf_path:
@@ -285,11 +357,33 @@ async def update_project_outline(
 # 同步包装器（供 Celery Task 直接调用）
 # ================================================================
 
+def _run_async(coro):
+    """
+    在同步上下文中运行异步协程。
+
+    此函数处理了 Windows 上的事件循环差异：
+    - 使用 asyncio.run() 创建新的事件循环（每次调用独立）
+    - 避免了嵌套事件循环和 'event loop is already running' 错误
+    """
+    try:
+        return asyncio.run(coro)
+    except RuntimeError as e:
+        if "event loop is already running" in str(e).lower():
+            # 已有运行中的事件循环（如 Jupyter/IPython 环境），
+            # 使用 nest_asyncio 或直接 await
+            logger.warning("检测到运行中的事件循环，尝试嵌套执行")
+            import nest_asyncio
+            nest_asyncio.apply()
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(coro)
+        raise
+
+
 def update_task_status_sync(
     project_id: str, task_type: TaskType, status: TaskStatus, error: str | None = None
 ) -> None:
     """同步包装：更新任务状态"""
-    asyncio.run(update_task_status(project_id, task_type, status, error))
+    _run_async(update_task_status(project_id, task_type, status, error))
 
 
 def save_document_sync(
@@ -301,7 +395,7 @@ def save_document_sync(
     section_order: int = 0,
 ) -> None:
     """同步包装：保存章节文档"""
-    asyncio.run(
+    _run_async(
         save_document(
             project_id=project_id,
             section_title=section_title,
@@ -320,11 +414,15 @@ def update_project_status_sync(
     pdf_path: str | None = None,
     md_path: str | None = None,
 ) -> None:
-    """同步包装：更新项目整体状态"""
-    asyncio.run(
+    """
+    同步包装：更新项目整体状态。
+    注意：status 参数为 None 时不会更新状态字段，
+    仅更新传入的 error_message / pdf_path / md_path。
+    """
+    _run_async(
         update_project_status(
             project_id=project_id,
-            status=status or ProjectStatus.PREPARING_DATA,
+            status=status,
             error_message=error_message,
             pdf_path=pdf_path,
             md_path=md_path,
@@ -340,7 +438,7 @@ def save_document_block_sync(
     order_index: int = 0,
 ) -> None:
     """同步包装：保存/更新文档块"""
-    asyncio.run(
+    _run_async(
         save_document_block(
             project_id=project_id,
             section_title=section_title,
@@ -356,7 +454,7 @@ def update_project_outline_sync(
     outline_content: str,
 ) -> None:
     """同步包装：保存大纲"""
-    asyncio.run(
+    _run_async(
         update_project_outline(
             project_id=project_id,
             outline_content=outline_content,

@@ -56,17 +56,16 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
 
     # ─── 1. 从数据库获取主题 ──────────────────────────────────
     import uuid as _uuid
-    from sqlalchemy import create_engine
-    from app.models.project import Project
+    from sqlalchemy import text
+    from app.core.celery_db import get_sync_engine
 
     # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
     project_id_hex = _uuid.UUID(project_id).hex
 
     settings = self.settings
-    sync_engine = create_engine(settings.DATABASE_URL_SYNC)
+    sync_engine = get_sync_engine()
 
     with sync_engine.connect() as conn:
-        from sqlalchemy import text
         result = conn.execute(
             text("SELECT topic FROM projects WHERE id = :pid"),
             {"pid": project_id_hex},

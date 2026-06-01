@@ -24,10 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.models.project import Project, ProjectStatus
-from app.models.task import Task, TaskType, TaskStatus
-from app.models.user import User
-from app.models.document_block import DocumentBlock
-from app.models.document import Document
 from app.schemas import (
     ProjectCreateRequest,
     ProjectCreateResponse,
@@ -43,12 +39,23 @@ from app.schemas import (
     SSEDraftEvent,
     ReportContentResponse,
     SectionContent,
+    SourceItem,
+    SourceReviewRequest,
+    SourceReviewResponse,
+    SourcesListResponse,
 )
 from app.tasks.report_workflow import (
-    run_full_report_workflow,       # 全自动流水线（旧版兼容）
-    prepare_data_workflow,          # 节点1：资料准备（搜索+建库+大纲）
-    run_draft_sections_workflow,    # 节点2：分章节异步撰写（审批后触发）
+    run_full_report_workflow,
+    prepare_sources_workflow,
+    generate_outline_workflow,
+    run_draft_sections_workflow,
+    _load_sources_from_project,
 )
+from app.core.celery_db import get_crawled_data_path
+from app.models.task import Task, TaskType, TaskStatus
+from app.models.user import User
+from app.models.document_block import DocumentBlock
+from app.models.document import Document
 from app.models.base import orm_to_dict
 
 logger = logging.getLogger(__name__)
@@ -75,7 +82,7 @@ def log_state_transition(
 
 
 # ================================================================
-# POST /api/v1/projects —— 创建行研项目，触发「节点1：资料准备」
+# POST /api/v1/projects —— 创建分析项目，触发「节点1：资料准备」
 # ================================================================
 
 @router.post("", response_model=ProjectCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -84,7 +91,7 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    创建一个行业研究项目，自动触发「节点1：资料准备与大纲生成」。
+    创建一个产品分析项目，自动触发「节点1：资料准备与大纲生成」。
 
     状态机详解：
     PREPARING_DATA (初始) →
@@ -92,7 +99,7 @@ async def create_project(
       等待用户通过 POST /approve-outline 确认。
 
     参数:
-    - **topic**: 研报主题，例如 "AI眼镜行业"
+    - **topic**: 分析主题，例如 "智能手表产品分析"
 
     返回项目 ID，前端可用 GET /status 轮询进度。
     """
@@ -109,7 +116,7 @@ async def create_project(
     await db.flush()
 
     log_state_transition(str(project.id), None, "preparing_data",
-                         f"用户提交行研主题: {body.topic}")
+                         f"用户提交分析主题: {body.topic}")
 
     # ─── 2. 创建 Task 链记录（节点1：搜索 → 知识库 → 大纲） ──
     task_definitions = [
@@ -129,16 +136,23 @@ async def create_project(
     await db.commit()
     await db.refresh(project)
 
-    # ─── 3. 提交 Celery 「节点1：资料准备」异步任务 ────────────
-    celery_task = prepare_data_workflow.delay(str(project.id))
-
-    logger.info("项目已创建 | topic=%s | project_id=%s | celery_task=%s",
-                body.topic, project.id, celery_task.id)
+    # ─── 3. 提交 Celery 「阶段1：资料搜集」异步任务 ────────────
+    celery_task_id: str | None = None
+    task_message = "项目已创建"
+    try:
+        celery_task = prepare_sources_workflow.delay(str(project.id))
+        celery_task_id = celery_task.id
+        task_message = "项目已创建，正在搜索资料并生成大纲，请稍候通过 /status 查询进度"
+        logger.info("项目已创建 | topic=%s | project_id=%s | celery_task=%s",
+                    body.topic, project.id, celery_task_id)
+    except Exception as e:
+        logger.warning("Celery 任务提交失败（Redis 可能未运行）: %s | 项目仍已入库", str(e))
+        task_message = "项目已创建，但异步工作流暂不可用（Redis 未连接），请稍后重试或联系管理员"
 
     return ProjectCreateResponse(
         project=ProjectResponse.model_validate(orm_to_dict(project)),
-        celery_task_id=celery_task.id,
-        message="项目已创建，正在搜索资料并生成大纲，请稍候通过 /status 查询进度",
+        celery_task_id=celery_task_id or "",
+        message=task_message,
     )
 
 
@@ -202,7 +216,132 @@ async def get_project_status(
 
 
 # ================================================================
-# POST /api/v1/projects/{project_id}/approve-outline —— 🎯 交互核心节点
+# 🎯 GET /api/v1/projects/{project_id}/sources —— 资料预审核面板数据
+# ================================================================
+
+@router.get("/{project_id}/sources", response_model=SourcesListResponse)
+async def list_sources(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    🎯 **交互节点1**：获取搜索结果/资料来源列表，供用户审核。
+
+    当项目状态为 `waiting_for_sources` 时，用户进入资料审核面板，
+    可查看每条资料的标题、URL、摘要，勾选/取消勾选。
+
+    返回格式适配前端「资料审核面板」组件。
+    """
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
+
+    if project.status not in (ProjectStatus.WAITING_FOR_SOURCES,
+                              ProjectStatus.PREPARING_OUTLINE,
+                              ProjectStatus.WAITING_FOR_OUTLINE,
+                              ProjectStatus.DRAFTING,
+                              ProjectStatus.COMPLETED):
+        raise HTTPException(
+            status_code=409,
+            detail=f"项目状态 '{project.status.value}' 不支持获取资料列表。请等待资料搜集完成。",
+        )
+
+    # 从暂存文件读取搜索结果
+    raw_sources = _load_sources_from_project(str(project_id))
+    sources: list[SourceItem] = []
+    for i, item in enumerate(raw_sources):
+        sources.append(SourceItem(
+            index=i + 1,
+            title=item.get("title", f"资料 {i + 1}"),
+            url=item.get("url", ""),
+            snippet=(item.get("content", "") or "")[:200],
+            selected=True,
+        ))
+
+    return SourcesListResponse(
+        project_id=project.id,
+        topic=project.topic,
+        sources=sources,
+        total_count=len(sources),
+    )
+
+
+# ================================================================
+# 🎯 POST /api/v1/projects/{project_id}/review-sources —— 确认资料
+# ================================================================
+
+@router.post("/{project_id}/review-sources", response_model=SourceReviewResponse)
+async def review_sources(
+    project_id: uuid.UUID,
+    body: SourceReviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    🎯 **交互节点1 确认**：用户审核资料后提交筛选结果，触发阶段2（大纲生成）。
+
+    状态机推进：
+    WAITING_FOR_SOURCES ──(用户审核资料)──→ PREPARING_OUTLINE
+
+    流程：
+    1. 接收用户筛选后的 URL 列表
+    2. 根据筛选结果更新爬取数据（过滤掉被剔除的资料）
+    3. 状态机推进到 PREPARING_OUTLINE
+    4. 触发 Celery 阶段2：生成大纲
+    """
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
+
+    if project.status != ProjectStatus.WAITING_FOR_SOURCES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前状态为 '{project.status.value}'，仅 'waiting_for_sources' 可审核资料。",
+        )
+
+    # ── 1. 筛选资料 ──────────────────────────────────────
+    raw_sources = _load_sources_from_project(str(project_id))
+    kept_sources = [
+        s for s in raw_sources
+        if s.get("url", "") in body.selected_urls
+    ]
+
+    # 重新保存筛选后的资料（供后续知识库构建使用）
+    import json as _json
+    temp_data_path = get_crawled_data_path(str(project_id))
+    with open(temp_data_path, "w", encoding="utf-8") as f:
+        _json.dump(kept_sources, f, ensure_ascii=False, indent=2)
+
+    logger.info("资料审核完成 | project=%s | kept=%d/%d | notes=%s",
+                project_id, len(kept_sources), len(raw_sources),
+                body.additional_notes or "")
+
+    # ── 2. 状态机推进：WAITING_FOR_SOURCES → PREPARING_OUTLINE ──
+    old_status = project.status
+    project.status = ProjectStatus.PREPARING_OUTLINE
+    log_state_transition(str(project.id), old_status, "preparing_outline",
+                         f"用户确认 {len(kept_sources)} 条资料（共 {len(raw_sources)} 条），开始生成大纲")
+    await db.commit()
+
+    # ── 3. 触发阶段2：生成大纲 ───────────────────────────
+    celery_task = generate_outline_workflow.delay(str(project.id))
+
+    return SourceReviewResponse(
+        project_id=project.id,
+        new_status=ProjectStatus.PREPARING_OUTLINE.value,
+        message=f"已确认 {len(kept_sources)} 条资料，正在生成大纲...",
+        kept_sources=len(kept_sources),
+        celery_task_id=celery_task.id,
+    )
+
+
+# ================================================================
+# POST /api/v1/projects/{project_id}/approve-outline —— 🎯 交互核心节点2
 # ================================================================
 
 @router.post("/{project_id}/approve-outline", response_model=OutlineApproveResponse)
@@ -243,13 +382,13 @@ async def approve_outline(
         )
 
     # ─── 校验状态 ──────────────────────────────────────────────
-    if project.status != ProjectStatus.WAITING_OUTLINE_APPROVAL:
+    if project.status != ProjectStatus.WAITING_FOR_OUTLINE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"当前项目状态为 '{project.status.value}'，"
-                "仅当状态为 'waiting_outline_approval' 时可以审批大纲。"
-                "请先等待资料准备完成。"
+                "仅当状态为 'waiting_for_outline' 时可以审批大纲。"
+                "请先等待资料审核和大纲生成完成。"
             ),
         )
 
@@ -614,7 +753,9 @@ async def download_report(
             detail=f"项目 {project_id} 不存在",
         )
 
-    if project.status in (ProjectStatus.PREPARING_DATA, ProjectStatus.WAITING_OUTLINE_APPROVAL, ProjectStatus.DRAFTING):
+    if project.status in (ProjectStatus.PREPARING_DATA, ProjectStatus.WAITING_FOR_SOURCES,
+                          ProjectStatus.PREPARING_OUTLINE, ProjectStatus.WAITING_FOR_OUTLINE,
+                          ProjectStatus.DRAFTING):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"报告正在生成中（当前状态: {project.status}），请先查询进度接口等待完成",

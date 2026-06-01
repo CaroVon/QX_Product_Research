@@ -16,6 +16,7 @@ from celery import Task
 
 from app.core.celery_app import celery_app
 from app.core.config import get_settings
+from app.core.celery_db import get_crawled_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -70,19 +71,14 @@ def build_knowledge_base(self: KnowledgeTask, project_id: str) -> dict[str, Any]
     # 由于 Celery 链式调用中无法直接传递大量数据（受 Broker 限制），
     # 我们采用"先存后读"策略：search_and_crawl 将结果保存到文件/Redis，
     # 此处再读取。
-    #
-    # 演示简化：使用项目级临时文件传递数据
-    # 实际项目建议使用 Redis 或 S3
-    temp_data_path = f"/tmp/crawled_data_{project_id}.json"
+    temp_data_path = get_crawled_data_path(project_id)
 
     if os.path.exists(temp_data_path):
         with open(temp_data_path, "r", encoding="utf-8") as f:
             crawled_data = json.load(f)
     else:
         # 如果找不到临时文件，说明 search_and_crawl 可能未执行
-        # 从结果后端获取（Celery 链式调用时可用）
         logger.warning("[TASK] 未找到临时数据文件，尝试从上游任务结果获取")
-        # 这里简化处理：如果 workflow 正确传参，不会走到这里
         raise FileNotFoundError(f"临时数据文件不存在: {temp_data_path}")
 
     # ─── 3. 执行切片 ──────────────────────────────────────────
@@ -110,13 +106,10 @@ def build_knowledge_base(self: KnowledgeTask, project_id: str) -> dict[str, Any]
     # chroma_dir = settings.CHROMA_PERSIST_DIR_TEMPLATE.format(tenant_id=tenant_id)
     # bm25_dir = settings.BM25_PERSIST_DIR_TEMPLATE.format(tenant_id=tenant_id)
 
-    # 保存原始 CWD，防止毒害其他 Celery 工作进程的数据库连接
-    _orig_cwd = os.getcwd()
-    os.chdir("/app")  # 确保工作目录正确（与原有脚本兼容）
-    try:
-        build_vector_store(all_chunks_with_meta)
-    finally:
-        os.chdir(_orig_cwd)  # 恢复 CWD，避免影响后续任务
+    # 使用配置中的持久化目录（跨平台兼容，不再硬编码 /app）
+    os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)
+    os.makedirs(settings.BM25_PERSIST_DIR, exist_ok=True)
+    build_vector_store(all_chunks_with_meta)
 
     # ─── 5. 清理临时文件 ──────────────────────────────────────
     try:
