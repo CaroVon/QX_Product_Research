@@ -72,7 +72,7 @@ def make_page_decorator(report_title: str):
         # 机构名（右）
         canv.setFont('STSong-Light', 8)
         canv.setFillColor(colors.HexColor('#b0c4de'))
-        canv.drawRightString(w - MARGIN_OUTER, h - 0.9 * cm, '行业研究报告')
+        canv.drawRightString(w - MARGIN_OUTER, h - 0.9 * cm, '产品分析报告')
 
         # ── 页脚 ──────────────────────────────────────────
         # 细分隔线
@@ -431,7 +431,7 @@ def markdown_to_pdf(md_path: str, pdf_path: str):
         topMargin=MARGIN_TOP + 1.4 * cm,   # 为页眉留空
         bottomMargin=MARGIN_BOT,
         title=report_title,
-        author='行业研究',
+        author='产品分析',
     )
 
     # 封面页（无页眉页脚）

@@ -1,215 +1,549 @@
+"""
+============================================================
+横版 PPT 风格 PDF 生成器 —— 基于 WeasyPrint 高级 CSS 排版
+============================================================
+
+将 Markdown 分析报告转化为 16:9 横版路演级 PDF:
+  - 真正 16:9 横版页面 (320mm × 180mm，比例 1.778:1)
+  - 杂志级沉浸式封面 (全屏概念图 + 暗色遮罩)
+  - PPT 大字号排版体系 (正文 ≥ 14pt)
+  - 强制单页单主题 (h2 → page-break-before)
+  - 页眉章节导航 + 页脚页码（滑动编号）
+  - 纯 Block 布局，完全杜绝 flex/grid
+  - 商业汇报标准：合理留白、清晰层级、专业配色
+"""
+
 import os
 import re
 import markdown2
 from weasyprint import HTML
 
-def markdown_to_pdf(md_path: str, pdf_path: str):
+
+# ══════════════════════════════════════════════════════════
+# 品牌色彩系统 (苹果极简白 + 深空灰 + 科技亮蓝)
+# ══════════════════════════════════════════════════════════
+COLOR = {
+    "bg_dark":     "#0f1117",   # 深空灰封面背景
+    "bg_body":     "#f5f6f8",   # 正文页极淡灰白底
+    "overlay":     "rgba(0, 0, 0, 0.55)",  # 封面暗色遮罩
+    "accent":      "#2d7cf6",   # 科技亮蓝 (点缀色)
+    "accent_dim":  "#1a5dc4",   # 深蓝 (页眉分割线)
+    "h2_color":    "#1a1f2e",   # 标题深色
+    "body_text":   "#2c3038",   # 正文色
+    "muted":       "#8899bb",   # 次要文字
+    "divider":     "#dce3ed",   # 细分割线
+    "white":       "#ffffff",
+    "header_bg":   "#0d1117",   # 页眉深色条 (正文页)
+}
+
+
+# ══════════════════════════════════════════════════════════
+# Helper：将 topic 安全化为文件名 / 标题片段
+# ══════════════════════════════════════════════════════════
+def _safe_topic(topic: str) -> str:
+    """移除文件名非法字符，用于图片路径拼接。"""
+    return re.sub(r'[\\/:*?"<>|]', '_', topic)
+
+
+# ══════════════════════════════════════════════════════════
+# 主函数
+# ══════════════════════════════════════════════════════════
+def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     """
-    升级为印刷级两阶段 HTML-to-PDF 工作流（全面抛弃低颜值、难排版的 ReportLab）。
-    严格遵循 WeasyPrint 规范：全页面背景满铺、完全杜绝 display:flex/grid、采用绝对定位与经典表格。
+    将 Markdown 分析报告渲染为横版 PPT 风格 PDF。
+
+    Args:
+        md_path:      Markdown 文件路径
+        pdf_path:     PDF 输出路径
+        cover_image:  (可选) 封面概念图的绝对/相对路径。
+                      若文件存在则用于封面全屏背景，否则使用纯色深空灰封面。
     """
-    print(f"[🎨 印刷级渲染] 正在解析 {md_path} 并调用 WeasyPrint 转化高阶研报 PDF...")
-    
-    with open(md_path, 'r', encoding='utf-8') as f:
+    print(f"[PPT PDF] 横版路演级 PDF 渲染启动...")
+
+    # ── 1. 读取 Markdown ──────────────────────────────────
+    with open(md_path, "r", encoding="utf-8") as f:
         md_content = f.read()
-        
-    # 提取第一个 H1 标题作为封面大标题
-    title_match = re.search(r'^#\s+(.+)', md_content, re.MULTILINE)
+
+    # ── 2. 提取标题 + 清洗 ────────────────────────────────
+    title_match = re.search(r"^#\s+(.+)", md_content, re.MULTILINE)
     report_title = title_match.group(1).strip() if title_match else "行业深度研究报告"
-    
-    # 移除原始代码中的大标题，避免在内容页重复呈现
-    clean_md = re.sub(r'^#\s+.+', '', md_content, count=1)
-    
-    # 转换为标准的富文本 HTML
-    html_body = markdown2.markdown(clean_md, extras=['tables', 'fenced-code-blocks', 'footnotes'])
-    
-    # 注入符合顶级咨询机构（麦肯锡/罗兰贝格）视觉水准的精美 CSS 样式
-    premium_html = f"""<!DOCTYPE html>
-<html>
+
+    # 移除 H1 (封面已承载)，保留正文用于幻灯片内容
+    clean_md = re.sub(r"^#\s+.+", "", md_content, count=1).strip()
+
+    # ── 3. Markdown → HTML ────────────────────────────────
+    html_body = markdown2.markdown(
+        clean_md,
+        extras=["tables", "fenced-code-blocks", "footnotes", "strike"],
+    )
+
+    # ── 4. 封面图逻辑 ─────────────────────────────────────
+    # 检测 cover_image 是否存在，不存在则回退纯色封面
+    has_cover_bg = bool(cover_image) and os.path.isfile(cover_image)
+    if has_cover_bg:
+        # 转为 file:// 绝对路径 (WeasyPrint 跨平台最佳实践)
+        abs_img = os.path.abspath(cover_image).replace("\\", "/")
+        print(f"[PPT PDF] 封面背景图: {abs_img}")
+    else:
+        print(f"[PPT PDF] 未检测到封面图，使用纯色深空灰封面")
+
+    # ── 5. 构建 PPT 风格 HTML + CSS ───────────────────────
+    premium_html = _build_html(report_title, html_body, has_cover_bg, cover_image)
+
+    # ── 6. 写入临时 HTML → WeasyPrint → PDF ───────────────
+    temp_html_path = md_path.replace(".md", ".html")
+    with open(temp_html_path, "w", encoding="utf-8") as f:
+        f.write(premium_html)
+
+    HTML(filename=temp_html_path).write_pdf(pdf_path)
+    print(f"[PPT PDF ✓] 横版路演 PDF 已生成: {pdf_path}")
+
+
+# ══════════════════════════════════════════════════════════
+# HTML 骨架 + 完整 CSS 构建
+# ══════════════════════════════════════════════════════════
+def _build_html(
+    title: str, body_html: str, has_bg: bool, img_path: str
+) -> str:
+    """
+    组装完整的 HTML 文档（封面 .cover + 正文 .slide-deck）。
+    所有 CSS 规则遵循 WeasyPrint 兼容的 Block 布局范式。
+    """
+
+    cover_html = _build_cover(title, has_bg, img_path)
+
+    # 移除 body_html 中可能残留的第一个 h1 (避免与封面重复)
+    body_html = re.sub(r"<h1[^>]*>.*?</h1>", "", body_html, count=1, flags=re.DOTALL)
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
 <head>
-    <meta charset="utf-8">
-    <style>
-        /* 页面整体视效与边距规范 */
-        @page {{
-            size: A4;
-            margin: 30mm 20mm 25mm 20mm;
-            background-color: #fafbfc; /* 优雅微米白底色，规避刺眼纯白 */
-            @top-center {{
-                content: "行业前沿深度洞察与产品设计报告";
-                font-family: 'Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-                font-size: 8.5pt;
-                color: #718096;
-                border-bottom: 0.5px solid #e2e8f0;
-                padding-bottom: 4mm;
-                margin-bottom: 10mm;
-                width: 100%;
-            }}
-            @bottom-right {{
-                content: "第 " counter(page) " 页";
-                font-family: 'Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'PingFang SC', sans-serif;
-                font-size: 9pt;
-                color: #a0aec0;
-            }}
-        }}
-        
-        /* 针对首张封面页的定制化覆盖（背景颜色自动填充整页包括页边距，移除 margin:0 以保持流布局） */
-        @page :first {{
-            background-color: #1a2238; /* 奢华古典深蓝 */
-            @top-center {{ content: normal; border-bottom: none; }}
-            @bottom-right {{ content: normal; }}
-        }}
-        
-        *, *::before, *::after {{ box-sizing: border-box; }}
-        
-        body {{
-            font-family: 'Times New Roman', 'Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-            color: #2d3748;
-            line-height: 1.7;
-            font-size: 10.5pt;
-            margin: 0;
-            padding: 0;
-        }}
-        
-        /* 封面区域布局 (改为正常块级流，配合 page-break-after 绝对防止重叠) */
-        .cover {{
-            display: block;
-            height: 242mm; /* A4 总高 297mm - 上边距 30mm - 下边距 25mm = 242mm 刚好填满第一页内容区 */
-            padding-top: 30mm;
-            color: #ffffff;
-            page-break-after: always; /* 核心：指示 WeasyPrint 在此块后强制换页 */
-            position: relative;
-        }}
-        
-        .cover-tag {{
-            display: inline-block;
-            font-size: 9pt;
+<meta charset="utf-8">
+<style>
+    ═══════════════════════════════════════════════════════
+    【页面基础】—— 真正 16:9 横版 = 320mm × 180mm
+    比例 1.778:1，完美适配现代宽屏显示器和投影
+    ═══════════════════════════════════════════════════════
+    @page {{
+        size: 320mm 180mm;
+        margin: 0 16mm 10mm 16mm;  /* 上下收紧，左右留呼吸空间 */
+        background-color: {COLOR["bg_body"]};
+
+        /*
+         * 正文页顶部页眉：深色窄条 + 左侧章节标识 + 右侧机构名。
+         * 使用 @top-left / @top-right 原生分页媒介实现。
+         */
+        @top-left {{
+            content: string(chapter);
+            font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+            font-size: 8pt;
+            font-weight: 600;
+            color: {COLOR["accent"]};
+            letter-spacing: 1.5px;
             text-transform: uppercase;
-            letter-spacing: 2px;
-            color: #60a5fa;
-            border: 1px solid #60a5fa;
-            padding: 3px 8px;
-            margin-bottom: 12mm;
+            padding-left: 2mm;
         }}
-        
-        .cover-title {{
-            font-size: 32pt;
-            font-weight: bold;
-            line-height: 1.25;
-            color: #ffffff;
-            margin-bottom: 8mm;
-            font-family: 'Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'PingFang SC', sans-serif;
+        @top-right {{
+            content: "产品深度研究 · 路演方案";
+            font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+            font-size: 7pt;
+            color: {COLOR["muted"]};
+            letter-spacing: 1px;
+            padding-right: 2mm;
         }}
-        
-        .cover-divider {{
-            width: 30mm;
-            height: 4px;
-            background-color: #3b82f6;
-            margin-bottom: 10mm;
+        @top-center {{
+            /*
+             * 一条横贯顶部的极细亮蓝线，模拟 PPT 顶栏装饰条。
+             * 内容为空，纯装饰；通过 border-bottom 实现细线。
+             */
+            content: "";
+            border-bottom: 0.6px solid {COLOR["accent"]};
+            width: 100%;
         }}
-        
-        .cover-subtitle {{
-            font-size: 14pt;
-            color: #9ca3af;
+
+        /*
+         * 正文页底部页脚：左侧页码 + 右侧机密标注。
+         * 通过 padding-top 制造与正文的呼吸感。
+         */
+        @bottom-left {{
+            content: counter(page) " /";
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-size: 8pt;
+            color: {COLOR["muted"]};
+            padding-top: 4mm;
         }}
-        
-        .cover-footer {{
-            position: absolute;
-            bottom: 10mm; /* 由于取消了绝对定位，这里的 bottom 是相对于 .cover 底部 */
-            left: 0;
-            font-size: 10pt;
-            color: #9ca3af;
-            line-height: 2;
+        @bottom-right {{
+            content: "CONFIDENTIAL · 产品前沿战略研究院";
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-size: 7pt;
+            color: {COLOR["muted"]};
+            letter-spacing: 0.5px;
+            padding-top: 4mm;
         }}
-        
-        /* 报告正文精美样式 */
-        .report-content {{
-            padding-top: 5mm;
-        }}
-        
-        h2 {{
-            font-size: 15pt;
-            color: #1e3a8a;
-            font-family: 'Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'PingFang SC', sans-serif;
-            border-left: 4.5px solid #3b82f6;
-            padding-left: 10px;
-            margin-top: 28pt;
-            margin-bottom: 14pt;
-            page-break-inside: avoid;
-            page-break-after: avoid; /* 杜绝标题变成孤行落页尾 */
-        }}
-        
-        p {{
-            margin-top: 0;
-            margin-bottom: 12pt;
-            text-align: justify;
-            text-indent: 21pt; /* 完美的中文首行双字符缩进 */
-        }}
-        
-        /* 强力插入的工业设计图鉴样式 */
-        img {{
-            max-width: 90%;
-            display: block;
-            margin: 25pt auto;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.05);
-        }}
-        
-        blockquote {{
-            margin: 18pt 0;
-            padding: 12pt 18pt;
-            background-color: #f1f5f9;
-            border-left: 4px solid #475569;
-            color: #334155;
-            border-radius: 0 6px 6px 0;
-            page-break-inside: avoid;
-        }}
-        
-        ul, ol {{
-            margin-bottom: 12pt;
-            padding-left: 20pt;
-        }}
-        
-        li {{
-            margin-bottom: 4pt;
-        }}
-        
-        /* 严炼级角标脚注展现 */
-        .footnotes {{
-            margin-top: 45pt;
-            border-top: 1px dashed #cbd5e1;
-            padding-top: 15pt;
-            font-size: 9.5pt;
-            color: #64748b;
-        }}
-    </style>
+    }}
+
+    /*
+     * 封面页特殊规则：移除页眉页脚，纯色深空背景铺满整页 (含 bleed)
+     */
+    @page cover {{
+        size: 320mm 180mm;
+        background-color: {COLOR["bg_dark"]};
+        margin: 0;
+        @top-left   {{ content: none; }}
+        @top-right  {{ content: none; }}
+        @top-center {{ content: none; border-bottom: none; }}
+        @bottom-left  {{ content: none; }}
+        @bottom-right {{ content: none; }}
+    }}
+
+    ═══════════════════════════════════════════════════════
+    【全局重置】—— 保证跨平台字体一致性
+    ═══════════════════════════════════════════════════════
+    *, *::before, *::after {{ box-sizing: border-box; }}
+
+    body {{
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC',
+                     'WenQuanYi Zen Hei', 'Helvetica Neue', sans-serif;
+        color: {COLOR["body_text"]};
+        line-height: 1.85;           /* PPT 级舒展行距 */
+        font-size: 14pt;            /* PPT 基础字号，远大于传统文档 */
+        margin: 0;
+        padding: 0;
+    }}
+
+    ═══════════════════════════════════════════════════════
+    【封面】—— 杂志级沉浸式开屏
+    ═══════════════════════════════════════════════════════
+    .cover {{
+        display: block;
+        position: relative;
+        width: 100%;
+        /* 16:9 封面无页眉页脚，取满 180mm 高度 */
+        height: 180mm;
+        page: cover;                /* 绑定 @page cover 规则 */
+        page-break-after: always;   /* 确保正文从新页开始 */
+        overflow: hidden;
+        color: {COLOR["white"]};
+    }}
+
+    /*
+     * 全屏背景图：绝对定位铺满封面，z-index: 0 置于底层。
+     * WeasyPrint 中 img 配合 width/height 100% + object-fit 表现稳定。
+     */
+    .cover-bg-img {{
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+        object-fit: cover;
+    }}
+
+    /*
+     * 暗色遮罩层：位于图片之上、文字之下，确保白色标题可读。
+     * 使用 rgba 半透明黑色，z-index: 1。
+     */
+    .cover-overlay {{
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+        background-color: {COLOR["overlay"]};
+    }}
+
+    /* 封面所有文字层统一 z-index: 2，位于遮罩之上 */
+    .cover-content {{
+        position: relative;
+        z-index: 2;
+        padding: 24mm 28mm 0 28mm;
+        height: 100%;
+    }}
+
+    /* 标签条 (e.g. "PRODUCT DEEP RESEARCH") */
+    .cover-tag {{
+        display: inline-block;
+        font-size: 9pt;
+        font-weight: 500;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        color: {COLOR["accent"]};
+        border: 1.2px solid {COLOR["accent"]};
+        padding: 4px 12px;
+        margin-bottom: 14mm;
+    }}
+
+    /* 封面主标题 */
+    .cover-title {{
+        font-size: 34pt;
+        font-weight: 700;
+        line-height: 1.2;
+        color: {COLOR["white"]};
+        margin-bottom: 6mm;
+        letter-spacing: 2px;
+    }}
+
+    /* 装饰分割线 (亮蓝短条) */
+    .cover-divider {{
+        width: 45mm;
+        height: 4px;
+        background-color: {COLOR["accent"]};
+        margin-bottom: 10mm;
+    }}
+
+    /* 副标题 */
+    .cover-subtitle {{
+        font-size: 14pt;
+        color: #bcc8e0;
+        letter-spacing: 1px;
+        margin-bottom: 2mm;
+    }}
+
+    /* 封面底部机构信息 */
+    .cover-footer {{
+        position: absolute;
+        bottom: 14mm;
+        left: 28mm;
+        font-size: 9pt;
+        color: {COLOR["muted"]};
+        line-height: 2;
+        z-index: 2;
+    }}
+
+    ═══════════════════════════════════════════════════════
+    【正文幻灯片区域】—— slide-deck
+    每张 "幻灯片" = 一个 h2 章节块，间距拉开，强制分页
+    16:9 宽屏排版：充分利用横向空间，正文区域宽度约 288mm
+    ═══════════════════════════════════════════════════════
+    .slide-deck {{
+        display: block;
+        padding-top: 4mm;
+        max-width: 100%;
+    }}
+
+    /*
+     * h2 核心规则：强制 page-break-before → 每个章节从新页开始。
+     * 这是实现 "PPT 翻页感" 的关键。
+     * page-break-inside: avoid 防止标题孤行。
+     */
+    h2 {{
+        font-size: 20pt;
+        font-weight: 700;
+        color: {COLOR["h2_color"]};
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+
+        /* PPT 左侧装饰色块 (通过 border-left 模拟) */
+        border-left: 5px solid {COLOR["accent"]};
+        padding-left: 12px;
+        margin-top: 0;
+        margin-bottom: 16pt;
+        line-height: 1.35;
+
+        /*
+         * 同时更新页眉中的章节名称 (string-set)。
+         * 每遇到一个新的 h2，页眉自动切换为当前章节标题。
+         */
+        string-set: chapter self;
+
+        page-break-before: always;   /* 核心：每章一页，幻灯翻页 */
+        page-break-inside: avoid;
+        page-break-after: avoid;
+    }}
+
+    /*
+     * h3：章节内子标题，无需换页但保持醒目。
+     */
+    h3 {{
+        font-size: 16pt;
+        font-weight: 600;
+        color: {COLOR["h2_color"]};
+        margin-top: 20pt;
+        margin-bottom: 12pt;
+        page-break-inside: avoid;
+        page-break-after: avoid;
+    }}
+
+    h4 {{
+        font-size: 14.5pt;
+        font-weight: 600;
+        color: {COLOR["body_text"]};
+        margin-top: 16pt;
+        margin-bottom: 10pt;
+    }}
+
+    /* 正文段落 */
+    p {{
+        margin-top: 0;
+        margin-bottom: 14pt;
+        text-align: justify;
+        text-indent: 0;             /* PPT 风格：段落间留白代替首行缩进 */
+        orphans: 3;                 /* 至少保留 3 行在同一页 */
+        widows: 3;
+    }}
+
+    /* 列表 */
+    ul, ol {{
+        margin-top: 8pt;
+        margin-bottom: 16pt;
+        padding-left: 22pt;
+    }}
+
+    li {{
+        margin-bottom: 8pt;
+        font-size: 14pt;
+        line-height: 1.75;
+    }}
+
+    /* 引用块 —— 模拟 PPT 中的 "要点卡片" */
+    blockquote {{
+        display: block;
+        margin: 20pt 0;
+        padding: 14pt 18pt;
+        background-color: {COLOR["white"]};
+        border-left: 4px solid {COLOR["accent"]};
+        border-radius: 0 4px 4px 0;
+        color: {COLOR["body_text"]};
+        font-size: 13.5pt;
+        line-height: 1.75;
+        page-break-inside: avoid;
+    }}
+
+    /* 图片：居中展示，带轻阴影 */
+    img {{
+        max-width: 85%;
+        display: block;
+        margin: 20pt auto;
+        border-radius: 6px;
+        border: 0.5px solid {COLOR["divider"]};
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
+        page-break-inside: avoid;
+    }}
+
+    /* 表格 */
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin: 18pt 0;
+        font-size: 12pt;
+        page-break-inside: avoid;
+    }}
+    th {{
+        background-color: {COLOR["header_bg"]};
+        color: {COLOR["white"]};
+        padding: 8pt 10pt;
+        font-weight: 600;
+        text-align: left;
+        font-size: 11pt;
+    }}
+    td {{
+        padding: 7pt 10pt;
+        border-bottom: 0.5px solid {COLOR["divider"]};
+        background-color: {COLOR["white"]};
+    }}
+
+    /* 代码块 */
+    pre {{
+        background-color: #1e2233;
+        color: #c8d6e5;
+        padding: 14pt 16pt;
+        border-radius: 4px;
+        font-size: 10pt;
+        line-height: 1.6;
+        overflow-x: auto;
+        page-break-inside: avoid;
+    }}
+    code {{
+        font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+        font-size: 9.5pt;
+    }}
+
+    /* 脚注区域 */
+    .footnotes {{
+        margin-top: 40pt;
+        border-top: 1px dashed {COLOR["muted"]};
+        padding-top: 14pt;
+        font-size: 10pt;
+        color: {COLOR["muted"]};
+    }}
+
+    /*
+     * 水平线：PPT 风格的精美分隔
+     */
+    hr {{
+        border: none;
+        height: 1px;
+        background-color: {COLOR["divider"]};
+        margin: 24pt 0;
+    }}
+</style>
 </head>
 <body>
-    <div class="cover">
-        <div class="cover-tag">INTELLIGENT REPORT</div>
-        <div class="cover-title">{report_title}</div>
-        <div class="cover-divider"></div>
-        <div class="cover-subtitle">深度产品行研与视觉概念设计方案书</div>
-        
-        <div class="cover-footer">
-            <strong>出品机构：</strong> 智能产品前沿战略研究院<br>
-            <strong>核心引擎：</strong> 智谱/硅基大模型多模态全流程管道<br>
-            <strong>数据溯源：</strong> 混合 RAG 多向并发权威链路
-        </div>
+
+    {cover_html}
+
+    <div class="slide-deck">
+        {body_html}
     </div>
-    
-    <div class="report-content">
-        {html_body}
-    </div>
+
 </body>
-</html>
-"""
-    
-    # 写入临时 HTML 进行媒介转换
-    temp_html_path = md_path.replace(".md", ".html")
-    with open(temp_html_path, 'w', encoding='utf-8') as f:
-        f.write(premium_html)
-        
-    # 调用 WeasyPrint 进行完美转换
-    HTML(filename=temp_html_path).write_pdf(pdf_path)
-    print(f"[OK] Premium Printed PDF successfully created at: {pdf_path}")
+</html>"""
+
+
+# ══════════════════════════════════════════════════════════
+# 封面 HTML 构建
+# ══════════════════════════════════════════════════════════
+def _build_cover(title: str, has_bg: bool, img_path: str) -> str:
+    """
+    构建杂志级封面 HTML 片段。
+    - 有背景图时：全屏图 + 暗色遮罩 + 白色文字
+    - 无背景图时：纯深空灰封面 + 装饰几何元素 + 亮色文字
+    """
+
+    if has_bg:
+        abs_img = os.path.abspath(img_path).replace("\\", "/")
+        bg_html = (
+            f'<img class="cover-bg-img" src="file:///{abs_img}" '
+            f'alt="封面概念图">'
+        )
+        overlay_html = '<div class="cover-overlay"></div>'
+    else:
+        # 纯色背景——封面自带深空灰 (由 @page cover 的 background-color 提供)
+        bg_html = ""
+        overlay_html = ""
+
+    return f"""
+    <div class="cover">
+        {bg_html}
+        {overlay_html}
+        <div class="cover-content">
+            <div class="cover-tag">PRODUCT DEEP RESEARCH</div>
+            <div class="cover-title">{title}</div>
+            <div class="cover-divider"></div>
+            <div class="cover-subtitle">产品深度研究路演方案</div>
+        </div>
+        <div class="cover-footer">
+            <strong>出品机构</strong>&nbsp; 产品前沿战略研究院<br>
+            <strong>核心引擎</strong>&nbsp; 硅基流动 FLUX.1 多模态视觉管道<br>
+            <strong>数据溯源</strong>&nbsp; 混合 RAG 多向并发权威检索链路
+        </div>
+    </div>"""
+
+
+# ══════════════════════════════════════════════════════════
+# CLI 调试入口
+# ══════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) >= 3:
+        md_in = sys.argv[1]
+        pdf_out = sys.argv[2]
+        img = sys.argv[3] if len(sys.argv) > 3 else ""
+    else:
+        md_in = "outputs/AI眼镜行业_report.md"
+        pdf_out = "outputs/AI眼镜行业_report_ppt.pdf"
+        img = ""
+
+    markdown_to_pdf(md_in, pdf_out, cover_image=img)
