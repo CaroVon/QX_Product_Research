@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import get_settings
+from app.models.base import Base  # 复用 models 中的统一 Base
 
 settings = get_settings()
 
@@ -33,12 +33,6 @@ AsyncSessionLocal = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,  # 防止 commit 后属性过期
 )
-
-
-# ─── 声明式基类 ─────────────────────────────────────────────────
-class Base(DeclarativeBase):
-    """所有 ORM 模型的基类"""
-    pass
 
 
 async def get_db() -> AsyncSession:

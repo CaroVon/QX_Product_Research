@@ -15,7 +15,9 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 # ─── Windows asyncio 兼容性修复 ─────────────────────────────────
-if sys.platform == "win32":
+# 注意：WindowsSelectorEventLoopPolicy 在 Python 3.14+ 中已弃用，
+# 因为默认的 ProactorEventLoop 现已支持子进程。
+if sys.platform == "win32" and sys.version_info < (3, 14):
     try:
         from asyncio import WindowsSelectorEventLoopPolicy
         asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())

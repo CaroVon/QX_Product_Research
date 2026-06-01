@@ -73,8 +73,9 @@ class MockCeleryTask:
 
 
 # Patch 在 projects 模块中已导入的引用（而非原始定义）
+# 新状态机使用 prepare_sources_workflow 作为入口
 mock_celery_patch = patch(
-    "app.api.v1.endpoints.projects.run_full_report_workflow",
+    "app.api.v1.endpoints.projects.prepare_sources_workflow",
     MockCeleryTask(),
 )
 
@@ -102,10 +103,7 @@ async def setup_db():
         user = User(
             id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
             email="admin@test.com",
-            username="admin",
-            hashed_password="fakehash",
-            is_active=True,
-            is_superuser=True,
+            name="Admin User",
         )
         session.add(user)
         await session.commit()
@@ -126,7 +124,7 @@ async def test_health_check():
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["app"] == "Research Agent API"
+        assert data["app"] == "Product Analysis Agent API"
 
 
 @pytest.mark.asyncio
@@ -143,7 +141,7 @@ async def test_create_project():
         data = resp.json()
         assert "project" in data
         assert data["project"]["topic"] == "AI眼镜行业"
-        assert data["project"]["status"] == "processing"
+        assert data["project"]["status"] == "preparing_data"
         assert "celery_task_id" in data
         print(f"\n  [OK] 创建项目成功: id={data['project']['id']}")
 
@@ -237,6 +235,213 @@ async def test_schema_validation():
         print(f"  [OK] 缺少字段校验返回 422")
 
 
+@pytest.mark.asyncio
+async def test_source_review_flow():
+    """🎯 测试交互节点1：资料审核流程（状态机约束）"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with mock_celery_patch:
+            create_resp = await client.post(
+                "/api/v1/projects",
+                json={"topic": "AI眼镜行业"},
+            )
+        project_id = create_resp.json()["project"]["id"]
+
+        # 此时状态应为 preparing_data，资料审核应返回 409
+        resp = await client.get(f"/api/v1/projects/{project_id}/sources")
+        assert resp.status_code == 409, f"preparing_data 状态下获取资料应返回409: {resp.text}"
+        print(f"\n  [OK] preparing_data 状态下 GET /sources → 409 (正确阻断)")
+
+        # 审核资料也应在非 waiting_for_sources 状态被阻断
+        resp = await client.post(
+            f"/api/v1/projects/{project_id}/review-sources",
+            json={"selected_urls": ["https://example.com"]},
+        )
+        assert resp.status_code == 409, f"非 waiting_for_sources 下审核应返回409: {resp.text}"
+        print(f"  [OK] 非 waiting_for_sources 状态下 POST /review-sources → 409 (正确阻断)")
+
+
+@pytest.mark.asyncio
+async def test_outline_approval_flow():
+    """🎯 测试交互节点2：大纲审批流程（状态机约束）"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with mock_celery_patch:
+            create_resp = await client.post(
+                "/api/v1/projects",
+                json={"topic": "AI眼镜行业"},
+            )
+        project_id = create_resp.json()["project"]["id"]
+
+        # 手动将项目状态推进到 waiting_for_outline，测试审批流程
+        async with TestSessionLocal() as session:
+            result = await session.execute(
+                select(Project).where(Project.id == uuid.UUID(project_id))
+            )
+            project = result.scalar_one()
+            project.status = ProjectStatus.WAITING_FOR_OUTLINE
+            project.outline_content = "# AI眼镜\n## 1. 行业概述\n## 2. 市场分析\n## 3. 竞品研究"
+            await session.commit()
+
+        # 此时应能成功审批大纲
+        mock_draft = MockCeleryTask()
+        with patch("app.api.v1.endpoints.projects.run_draft_sections_workflow", mock_draft):
+            resp = await client.post(
+                f"/api/v1/projects/{project_id}/approve-outline",
+                json={
+                    "outline": "# AI眼镜行业深度分析\n## 1. 行业概述与趋势\n## 2. 市场规模分析\n## 3. 竞品格局"
+                },
+            )
+        assert resp.status_code == 200, f"审批大纲失败: {resp.text}"
+        data = resp.json()
+        assert data["new_status"] == "drafting", f"状态应为 drafting，实际: {data['new_status']}"
+        assert data["sections_count"] == 3, f"应解析出 3 个章节，实际: {data['sections_count']}"
+        print(f"\n  [OK] 大纲审批成功: {data['sections_count']} 个章节 → 状态变为 drafting")
+
+        # 验证 DocumentBlock 占位已创建
+        resp = await client.get(f"/api/v1/projects/{project_id}/blocks")
+        assert resp.status_code == 200
+        blocks = resp.json()["blocks"]
+        assert len(blocks) == 3, f"应有 3 个占位块，实际: {len(blocks)}"
+        print(f"  [OK] 已创建 {len(blocks)} 个 DocumentBlock 占位")
+
+        # 再次审批应返回 409（不在 waiting 状态）
+        resp = await client.post(
+            f"/api/v1/projects/{project_id}/approve-outline",
+            json={"outline": "# Test\n## 1. S1"},
+        )
+        assert resp.status_code == 409
+        print(f"  [OK] 重复审批大纲 → 409 (正确阻断)")
+
+
+@pytest.mark.asyncio
+async def test_editor_revise_endpoint():
+    """🎯 测试 Inline AI 编辑器改写功能"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 测试快速指令：润色
+        resp = await client.post(
+            "/api/v1/editor/revise",
+            json={
+                "selected_text": "AI眼镜市场在2025年达到1000亿规模，增长迅速。",
+                "instruction": "润色",
+            },
+        )
+        assert resp.status_code == 200, f"编辑改写失败: {resp.text}"
+        data = resp.json()
+        assert "revised_text" in data
+        assert len(data["revised_text"]) > 0
+        print(f"\n  [OK] 编辑器改写成功: len={len(data['revised_text'])}")
+
+        # 测试自定义指令
+        resp = await client.post(
+            "/api/v1/editor/revise",
+            json={
+                "selected_text": "The product has good features.",
+                "instruction": "使表达更正式",
+            },
+        )
+        assert resp.status_code == 200
+        print(f"  [OK] 自定义指令改写成功")
+
+        # 测试输入校验（空文本）
+        resp = await client.post(
+            "/api/v1/editor/revise",
+            json={
+                "selected_text": "",
+                "instruction": "润色",
+            },
+        )
+        assert resp.status_code == 422, f"空文本应返回 422: {resp.text}"
+        print(f"  [OK] 空文本校验 → 422")
+
+
+@pytest.mark.asyncio
+async def test_full_state_machine_flow():
+    """🎯 测试完整状态机流转：PREPARING_DATA → WAITING_FOR_SOURCES → WAITING_FOR_OUTLINE → DRAFTING → COMPLETED"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. 创建项目 (PREPARING_DATA)
+        with mock_celery_patch:
+            create_resp = await client.post(
+                "/api/v1/projects",
+                json={"topic": "状态机端到端测试"},
+            )
+        assert create_resp.status_code == 201
+        project_id = create_resp.json()["project"]["id"]
+        print(f"\n  [STEP 1] 项目创建: {project_id} → preparing_data")
+
+        # 2. 模拟资料准备完成 → WAITING_FOR_SOURCES
+        async with TestSessionLocal() as session:
+            result = await session.execute(
+                select(Project).where(Project.id == uuid.UUID(project_id))
+            )
+            project = result.scalar_one()
+            project.status = ProjectStatus.WAITING_FOR_SOURCES
+            await session.commit()
+        print(f"  [STEP 2] 状态推进: preparing_data → waiting_for_sources")
+
+        # 3. 用户审核资料 → 触发大纲生成
+        resp = await client.post(
+            f"/api/v1/projects/{project_id}/review-sources",
+            json={"selected_urls": ["https://example.com/source1"]},
+        )
+        assert resp.status_code == 200, f"资料审核失败: {resp.text}"
+        assert resp.json()["new_status"] == "preparing_outline"
+        print(f"  [STEP 3] 资料审核确认 → preparing_outline")
+
+        # 4. 模拟大纲生成完成 → WAITING_FOR_OUTLINE
+        async with TestSessionLocal() as session:
+            result = await session.execute(
+                select(Project).where(Project.id == uuid.UUID(project_id))
+            )
+            project = result.scalar_one()
+            project.status = ProjectStatus.WAITING_FOR_OUTLINE
+            project.outline_content = "# 测试报告\n## 1. 概述\n## 2. 分析\n## 3. 结论"
+            await session.commit()
+        print(f"  [STEP 4] 状态推进: preparing_outline → waiting_for_outline")
+
+        # 5. 用户审批大纲 → DRAFTING
+        mock_draft = MockCeleryTask()
+        with patch("app.api.v1.endpoints.projects.run_draft_sections_workflow", mock_draft):
+            resp = await client.post(
+                f"/api/v1/projects/{project_id}/approve-outline",
+                json={
+                    "outline": "# 测试报告\n## 1. 概述\n## 2. 分析\n## 3. 结论"
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["new_status"] == "drafting"
+        assert resp.json()["sections_count"] == 3
+        print(f"  [STEP 5] 大纲确认 → drafting ({resp.json()['sections_count']} 章节)")
+
+        # 6. 验证 DocumentBlock 和 Task 已创建
+        resp = await client.get(f"/api/v1/projects/{project_id}/blocks")
+        assert resp.status_code == 200
+        blocks = resp.json()["blocks"]
+        assert len(blocks) == 3
+
+        resp = await client.get(f"/api/v1/projects/{project_id}/status")
+        write_tasks = [t for t in resp.json()["tasks"] if t["task_type"] == "write_section"]
+        assert len(write_tasks) == 3
+        print(f"  [STEP 6] 验证: {len(blocks)} blocks + {len(write_tasks)} write tasks")
+
+        # 7. 模拟全部撰写完成 → COMPLETED
+        async with TestSessionLocal() as session:
+            result = await session.execute(
+                select(Project).where(Project.id == uuid.UUID(project_id))
+            )
+            project = result.scalar_one()
+            project.status = ProjectStatus.COMPLETED
+            await session.commit()
+        print(f"  [STEP 7] 状态推进: drafting → completed")
+
+        # 8. 验证最终状态
+        resp = await client.get(f"/api/v1/projects/{project_id}/status")
+        assert resp.json()["project_status"] == "completed"
+        print(f"  [STEP 8] 最终状态验证: ✅ COMPLETED")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Research Agent API 集成测试")
@@ -251,10 +456,7 @@ if __name__ == "__main__":
             user = User(
                 id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
                 email="admin@test.com",
-                username="admin",
-                hashed_password="fakehash",
-                is_active=True,
-                is_superuser=True,
+                name="Admin User",
             )
             session.add(user)
             await session.commit()

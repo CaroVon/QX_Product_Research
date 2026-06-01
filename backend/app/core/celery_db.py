@@ -37,15 +37,14 @@ from app.models.document_block import DocumentBlock
 logger = logging.getLogger(__name__)
 
 # ─── Windows asyncio 兼容性修复 ─────────────────────────────────
-# 在 Windows 上，Python 3.8+ 默认使用 ProactorEventLoop，
-# 该事件循环不支持 subprocess（Celery 子任务会用到），
-# 因此显式设置为 SelectorEventLoop
-if sys.platform == "win32":
+# 注意：WindowsSelectorEventLoopPolicy 在 Python 3.14+ 中已弃用。
+# 仅在需要子进程支持的旧 Python 版本中设置 SelectorEventLoop。
+if sys.platform == "win32" and sys.version_info < (3, 14):
     try:
         from asyncio import WindowsSelectorEventLoopPolicy
         asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
     except ImportError:
-        pass  # Python < 3.8 没有这个方法，忽略
+        pass
 
 # ─── 为 Celery Worker 创建独立的异步引擎 ──────────────────────
 settings = get_settings()
@@ -361,21 +360,26 @@ def _run_async(coro):
     """
     在同步上下文中运行异步协程。
 
-    此函数处理了 Windows 上的事件循环差异：
-    - 使用 asyncio.run() 创建新的事件循环（每次调用独立）
-    - 避免了嵌套事件循环和 'event loop is already running' 错误
+    此函数处理了不同 Python 版本的事件循环差异：
+    - Python 3.10+：使用 asyncio.run() 创建新的事件循环
+    - 如果事件循环已在运行，回退到 nest_asyncio（如果已安装）
     """
     try:
         return asyncio.run(coro)
     except RuntimeError as e:
         if "event loop is already running" in str(e).lower():
-            # 已有运行中的事件循环（如 Jupyter/IPython 环境），
-            # 使用 nest_asyncio 或直接 await
             logger.warning("检测到运行中的事件循环，尝试嵌套执行")
-            import nest_asyncio
-            nest_asyncio.apply()
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(coro)
+            try:
+                import nest_asyncio
+                nest_asyncio.apply()
+                loop = asyncio.get_event_loop()
+                return loop.run_until_complete(coro)
+            except ImportError:
+                logger.error("nest_asyncio 未安装，无法嵌套运行异步协程")
+                raise RuntimeError(
+                    "无法在已运行的事件循环中执行异步操作。"
+                    "请安装 nest_asyncio: pip install nest_asyncio"
+                ) from e
         raise
 
 
