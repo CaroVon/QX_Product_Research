@@ -361,7 +361,7 @@ export function BlockEditor({
   })
 
   // ─── 编辑器就绪回调 ──────────────────────────────────────
-  useMemo(() => {
+  useEffect(() => {
     if (editor && onEditorReady) {
       onEditorReady(editor)
     }
@@ -389,8 +389,7 @@ export function BlockEditor({
   }, [editor, setActiveCitationId])
 
   // ─── 当 blocks 变化时更新编辑器内容 ──────────────────────
-  // 仅在流式接收完成或内容明显变化时更新
-  useMemo(() => {
+  useEffect(() => {
     if (editor && !isStreaming) {
       const currentHtml = editor.getHTML()
       if (currentHtml !== editorContent) {

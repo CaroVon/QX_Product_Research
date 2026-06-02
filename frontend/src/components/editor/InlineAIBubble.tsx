@@ -25,7 +25,6 @@
 import { useState, useCallback, useRef } from 'react'
 import { BubbleMenu } from '@tiptap/react/menus'
 import type { Editor } from '@tiptap/react'
-import type { EditorState } from '@tiptap/pm/state'
 import { editorApi } from '@/lib/api'
 import { DiffViewNode } from './DiffViewNode'
 
@@ -138,14 +137,11 @@ export function InlineAIBubble({ editor }: InlineAIBubbleProps) {
   return (
     <BubbleMenu
       editor={editor}
-      shouldShow={({ state: st }: { state: EditorState }) => {
+      shouldShow={({ state: editorState }) => {
         // 仅当选中非空文本时显示
-        const { empty } = st.selection
-        if (empty) return false
-
+        if (editorState.selection.empty) return false
         // 如果处于 diff 或 loading 阶段，由上层控制
         if (state.phase !== 'idle') return false
-
         return true
       }}
     >

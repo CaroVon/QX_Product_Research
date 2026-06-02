@@ -85,8 +85,8 @@ def build_report_markdown(
                 full_path, len(report))
 
     # ─── 4. 更新数据库中的 md_path ────────────────────────────
-    from app.core.celery_db import update_project_status_sync
-    update_project_status_sync(project_id, None, md_path=relative_path)
+    from app.repositories import ProjectRepo
+    ProjectRepo().update_project_status(project_id, md_path=relative_path)
 
     return relative_path
 
@@ -177,7 +177,7 @@ def generate_pdf_report(
     logger.info("[TASK] PDF 文件已确认 | path=%s | size=%d bytes", pdf_full_path, file_size)
 
     # ─── 更新数据库中的 pdf_path ─────────────────────────────
-    from app.core.celery_db import update_project_status_sync
-    update_project_status_sync(project_id, None, pdf_path=pdf_filename)
+    from app.repositories import ProjectRepo
+    ProjectRepo().update_project_status(project_id, pdf_path=pdf_filename)
 
     return pdf_filename

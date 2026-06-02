@@ -554,14 +554,15 @@ async def stream_draft(
 
     async def event_generator():
         """
-        伪代码：SSE 事件生成器。
+        SSE 事件生成器 —— 轮询 DocumentBlock 表推送给前端。
 
-        实际实现应改为：
-        1. Celery Worker 在每完成一个 DocumentBlock 后，
-           向 Redis Stream（key: draft_stream:{project_id}）写入事件
-        2. 此 SSE 端点订阅 Redis Stream，实时推送
+        生产环境中可升级为 Redis Pub/Sub：
+        1. Celery Worker 写完 DocumentBlock 后向 Redis 发布事件
+        2. 此端点订阅 Redis 频道实时推送
         3. 前端 EventSource 连接后即刻收到推送
         """
+        import asyncio as _asyncio
+
         # ─── 确认项目存在 ──────────────────────────────────────
         result = await db.execute(
             select(Project).where(Project.id == project_id)
@@ -571,25 +572,25 @@ async def stream_draft(
             yield f"event: error\ndata: {json.dumps({'error': '项目不存在'})}\n\n"
             return
 
-        if project.status != ProjectStatus.DRAFTING:
+        if project.status not in (ProjectStatus.DRAFTING, ProjectStatus.COMPLETED):
             yield f"event: error\ndata: {json.dumps({'error': f'项目状态为 {project.status}，无法流式输出'})}\n\n"
             return
 
-        # ─── 模拟：轮询 DocumentBlock 表，有新块即推送 ─────────
-        # 实际生产代码应改为 Redis Pub/Sub 或 WebSocket
-        import asyncio as _asyncio
-
         last_block_count = 0
-        max_wait_cycles = 120  # 最多等待 120 个轮询周期（约 10 分钟）
+        max_wait_cycles = 300  # 最多 300 个轮询周期（约 10 分钟，2s 间隔）
         wait_cycles = 0
+        heartbeat_interval = 10  # 每 10 个周期发送一次心跳
 
-        # 获取总章节数
         sections = _extract_sections_from_outline(project.outline_content or "")
         total_sections = len(sections) if sections else 0
 
         yield f"event: draft_start\ndata: {json.dumps({'project_id': pid_str, 'total_sections': total_sections})}\n\n"
 
         while wait_cycles < max_wait_cycles:
+            # ── 心跳注释（保持连接存活） ──────────────────────
+            if wait_cycles % heartbeat_interval == 0:
+                yield f": heartbeat {wait_cycles}\n\n"
+
             # 查询最新的 DocumentBlock
             block_result = await db.execute(
                 select(DocumentBlock)
@@ -605,7 +606,10 @@ async def stream_draft(
                         orm_to_dict(block)
                     ).model_dump(mode="json")
 
-                    yield f"event: section_chunk\ndata: {json.dumps(block_data, ensure_ascii=False)}\n\n"
+                    yield (
+                        f"event: section_chunk\n"
+                        f"data: {json.dumps(block_data, ensure_ascii=False)}\n\n"
+                    )
 
                 last_block_count = len(all_blocks)
 
@@ -620,13 +624,32 @@ async def stream_draft(
                 all_done = all(t.status == TaskStatus.COMPLETED for t in write_tasks)
 
                 if all_done and len(write_tasks) > 0:
-                    yield f"event: draft_complete\ndata: {json.dumps({'project_id': pid_str, 'total_blocks': last_block_count})}\n\n"
+                    yield (
+                        f"event: draft_complete\n"
+                        f"data: {json.dumps({'project_id': pid_str, 'total_blocks': last_block_count})}\n\n"
+                    )
                     return
 
-            await _asyncio.sleep(5)  # 每 5 秒轮询一次
+            # 也检查项目是否已到终态
+            if project.status == ProjectStatus.COMPLETED:
+                yield (
+                    f"event: draft_complete\n"
+                    f"data: {json.dumps({'project_id': pid_str, 'total_blocks': last_block_count, 'reason': 'project_completed'})}\n\n"
+                )
+                return
+
+            if project.status == ProjectStatus.FAILED:
+                err_msg = f"项目失败: {project.error_message or '未知错误'}"
+                yield (
+                    f"event: error\n"
+                    f"data: {json.dumps({'error': err_msg})}\n\n"
+                )
+                return
+
+            await _asyncio.sleep(2)  # 每 2 秒轮询一次
             wait_cycles += 1
 
-        yield f"event: error\ndata: {json.dumps({'error': 'SSE 流超时'})}\n\n"
+        yield f"event: error\ndata: {json.dumps({'error': 'SSE 流超时（已等待约 10 分钟）'})}\n\n"
 
     return StreamingResponse(
         event_generator(),

@@ -14,6 +14,14 @@ import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+# ─── 确保 backend/ 目录在 sys.path 中（自包含包解析） ──────────
+# 当从项目根目录运行时 (uvicorn app.main:app)，Python 默认会找到
+# 项目根目录的 app/ 旧业务逻辑包。这里将 backend/ 也加入搜索路径，
+# 确保 app.shared 等新模块从 backend/app/ 优先加载。
+_backend_dir = Path(__file__).resolve().parent.parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 # ─── Windows asyncio 兼容性修复 ─────────────────────────────────
 # 注意：WindowsSelectorEventLoopPolicy 在 Python 3.14+ 中已弃用，
 # 因为默认的 ProactorEventLoop 现已支持子进程。
@@ -24,13 +32,14 @@ if sys.platform == "win32" and sys.version_info < (3, 14):
     except ImportError:
         pass
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
-from app.core.database import engine
+from app.core.database import engine, get_db
 from app.models import Base
 from app.api.v1.router import router as v1_router
 
@@ -150,6 +159,37 @@ def create_app() -> FastAPI:
             "app": settings.APP_NAME,
             "version": settings.APP_VERSION,
         }
+
+    @app.get("/health/db")
+    async def health_check_db(db: AsyncSession = Depends(get_db)):
+        """数据库连接健康检查 —— 使用依赖注入确保测试隔离"""
+        from sqlalchemy import text
+        try:
+            result = await db.execute(text("SELECT 1"))
+            result.all()  # 消费结果验证连接
+            # 验证核心表存在
+            tables_result = await db.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                if "sqlite" in settings.DATABASE_URL_ASYNC
+                else text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public' ORDER BY table_name"
+                )
+            )
+            rows = tables_result.all()
+            tables = [row[0] for row in rows]
+            return {
+                "status": "ok",
+                "database": "connected",
+                "engine": "sqlite" if "sqlite" in settings.DATABASE_URL_ASYNC else "postgresql",
+                "tables": tables,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "database": "disconnected",
+                "detail": str(e),
+            }
 
     logger.info("[APP] FastAPI 应用初始化完成")
     return app

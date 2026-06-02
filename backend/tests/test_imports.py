@@ -1,60 +1,78 @@
 """
 ============================================================
-导入测试 —— 验证所有模块能否正常导入
+导入测试 —— 验证所有关键模块能正常导入且基本功能正常
 ============================================================
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import uuid
+import pytest
 
-# 1. 测试核心配置
-print("[TEST] 导入 config...")
-from app.core.config import get_settings, Settings
-s = get_settings()
-print(f"  OK: APP_NAME={s.APP_NAME}, DB={s.POSTGRES_HOST}")
 
-# 2. 测试 Pydantic schemas
-print("[TEST] 导入 schemas...")
-from app.schemas import (
-    ProjectCreateRequest,
-    ProjectResponse,
-    ProjectCreateResponse,
-    ProjectStatusResponse,
-    TaskResponse,
-    DownloadResponse,
-)
+class TestCoreImports:
+    """核心模块导入验证"""
 
-# 测试 Schema 校验
-req = ProjectCreateRequest(topic="AI眼镜行业")
-print(f"  OK: ProjectCreateRequest(topic={req.topic})")
+    def test_config_import(self):
+        from app.core.config import get_settings
+        s = get_settings()
+        assert s.APP_NAME == "Product Analysis Agent API"
+        assert s.APP_VERSION == "1.0.0"
 
-resp = ProjectResponse(
-    id="00000000-0000-0000-0000-000000000001",
-    topic="test",
-    status="pending",
-    created_at="2024-01-01T00:00:00Z",
-)
-print(f"  OK: ProjectResponse(id={resp.id})")
+    def test_schemas_import_and_validation(self):
+        from app.schemas import ProjectCreateRequest, ProjectResponse
 
-# 3. 测试 ORM 模型（纯语法检查）
-print("[TEST] 导入 models（语法检查）...")
-from app.models import Base, User, Project, Task, Document, ProjectStatus, TaskType, TaskStatus
-print(f"  OK: 所有模型导入成功")
+        # Schema 校验
+        req = ProjectCreateRequest(topic="AI眼镜行业")
+        assert req.topic == "AI眼镜行业"
 
-# 4. 测试 Celery 应用
-print("[TEST] 导入 celery_app...")
-from app.core.celery_app import celery_app
-print(f"  OK: Celery app name={celery_app.main}")
+        # 最小 topic 长度校验
+        with pytest.raises(Exception):
+            ProjectCreateRequest(topic="")
 
-# 5. 测试 FastAPI 应用
-print("[TEST] 导入 FastAPI app...")
-from app.main import create_app
-app = create_app()
-routes = [r.path for r in app.routes if hasattr(r, 'path')]
-print(f"  OK: FastAPI 路由数量={len(routes)}")
-print(f"  路由列表: {routes}")
+        # 响应模型
+        resp = ProjectResponse(
+            id=uuid.uuid4(),
+            topic="test",
+            status="preparing_data",
+            created_at="2024-01-01T00:00:00Z",
+        )
+        assert resp.topic == "test"
 
-print("\n" + "=" * 50)
-print("[PASSED] 所有模块导入测试通过！")
-print("=" * 50)
+    def test_models_import(self):
+        from app.models import (
+            Base, User, Project, Task, Document, DocumentBlock,
+            ProjectStatus, TaskType, TaskStatus, ProjectLog, LogLevel,
+        )
+        # 枚举值验证
+        assert ProjectStatus.PREPARING_DATA.value == "preparing_data"
+        assert ProjectStatus.COMPLETED.value == "completed"
+        assert TaskType.SEARCH.value == "search"
+        assert TaskType.WRITE_SECTION.value == "write_section"
+        assert TaskStatus.PENDING.value == "pending"
+        assert LogLevel.INFO.value == "info"
+
+    def test_celery_app_import(self):
+        from app.core.celery_app import celery_app
+        assert celery_app.main == "research_agent"
+
+    def test_fastapi_app_creation(self):
+        from app.main import create_app
+        app = create_app()
+        routes = [r.path for r in app.routes if hasattr(r, 'path')]
+        assert "/health" in routes
+        assert "/health/db" in routes
+        assert "/api/v1/projects" in routes
+        assert "/api/v1/editor/revise" in routes
+
+    def test_outline_parser_import(self):
+        from app.shared.outline_parser import extract_sections
+        sections = extract_sections("# Title\n## 1. 概述\n## 2. 分析")
+        assert len(sections) == 2
+
+    def test_project_repo_import(self):
+        from app.repositories import ProjectRepo
+        repo = ProjectRepo()
+        assert repo is not None
+
+    def test_database_engine_exists(self):
+        from app.core.database import engine
+        assert engine is not None
