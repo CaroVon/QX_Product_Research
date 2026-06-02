@@ -30,9 +30,10 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import type { Editor } from '@tiptap/react'
-import { ArrowLeft, Loader2, AlertCircle, FileText, BookOpen, Quote, Bot } from 'lucide-react'
+import { ArrowLeft, Loader2, AlertCircle, Search, FileText, BookOpen, Quote, Bot, Terminal } from 'lucide-react'
 import { Button } from '@/components/common/button'
 import { ProgressTracker } from '@/components/projects/ProgressTracker'
+import { SourcesReview } from '@/components/projects/SourcesReview'
 import { OutlineApproval } from '@/components/projects/OutlineApproval'
 import { ThreePaneLayout, useThreePane } from '@/components/layout/ThreePaneLayout'
 import { BlockEditor } from '@/components/editor/BlockEditor'
@@ -40,12 +41,16 @@ import { cn } from '@/lib/utils'
 import {
   useProjectStatus,
   useProjectBlocks,
+  useSources,
+  useReviewSources,
   useApproveOutline,
   getStatusFlags,
 } from '@/hooks/useProjectStatus'
 import { useEditorSync } from '@/hooks/useEditorSync'
 import { useDraftStream } from '@/hooks/useDraftStream'
 import { useCitationStore } from '@/hooks/useCitationStore'
+import { useProjectLogs } from '@/hooks/useProjectLogs'
+import { TerminalTimeline } from '@/components/projects/TerminalTimeline'
 import type { OutlineSection, RightPanelView } from '@/types/index'
 
 // ================================================================
@@ -162,11 +167,29 @@ function AgentChatPanel() {
   )
 }
 
-function RightPanel({ view, onClose }: RightPanelProps) {
+function RightPanel({
+  view,
+  onClose,
+  logs = [],
+  logsLoading = false,
+}: RightPanelProps & { logs?: import('@/types/api').ProjectLogResponse[]; logsLoading?: boolean }) {
   return (
     <div className="flex h-full flex-col">
       {/* ─── 面板切换标签 ─────────────────────────────────────── */}
       <div className="flex items-center border-b border-border">
+        <button
+          type="button"
+          onClick={() => {}}
+          className={cn(
+            'flex flex-1 items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors',
+            view === 'logs'
+              ? 'border-b-2 border-emerald-500 text-emerald-500'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <Terminal className="h-3.5 w-3.5" />
+          日志
+        </button>
         <button
           type="button"
           onClick={() => {}}
@@ -196,7 +219,10 @@ function RightPanel({ view, onClose }: RightPanelProps) {
       </div>
 
       {/* ─── 面板内容 ─────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-hidden">
+        {view === 'logs' && (
+          <TerminalTimeline logs={logs} isLoading={logsLoading} />
+        )}
         {view === 'citations' && <CitationsPanel />}
         {view === 'agent-chat' && <AgentChatPanel />}
       </div>
@@ -221,6 +247,24 @@ export function WorkspacePage() {
   } = useProjectStatus({ projectId, enabled: true })
 
   const flags = getStatusFlags(statusData?.project_status)
+
+  // ─── 🆕 实时运行日志 ──────────────────────────────────────
+  const { logs, isLoading: logsLoading } = useProjectLogs({
+    projectId,
+    status: statusData?.project_status,
+    enabled: true,
+  })
+
+  // ─── 资料审核（waiting_for_sources 阶段启用） ──────────────
+  const sourcesEnabled = flags.isWaitingSources
+  const {
+    data: sourcesData,
+    isLoading: sourcesLoading,
+    isError: sourcesError,
+  } = useSources(projectId, sourcesEnabled)
+
+  // ─── 资料审核 Mutation ─────────────────────────────────────
+  const reviewSourcesMutation = useReviewSources()
 
   // ─── 文档块查询（drafting / completed 阶段启用） ────────────
   const blocksEnabled = flags.isDrafting || flags.isCompleted
@@ -289,6 +333,15 @@ export function WorkspacePage() {
       console.log('[WorkspacePage] 草稿流完成')
     },
   })
+
+  // ─── 资料审核回调 ──────────────────────────────────────────
+  const handleReviewSources = useCallback(async (selectedUrls: string[]) => {
+    if (!projectId) return
+    await reviewSourcesMutation.mutateAsync({
+      projectId,
+      data: { selected_urls: selectedUrls },
+    })
+  }, [projectId, reviewSourcesMutation])
 
   // ─── 大纲确认回调 ──────────────────────────────────────────
   const handleConfirmOutline = useCallback(async (outline: string) => {
@@ -378,30 +431,74 @@ export function WorkspacePage() {
                 flags.isCompleted && 'bg-emerald-50 text-emerald-600',
                 flags.isFailed && 'bg-red-50 text-red-600',
                 flags.isPreparing && 'bg-blue-50 text-blue-600',
+                flags.isWaitingSources && 'bg-blue-50 text-blue-600',
+                flags.isPreparingOutline && 'bg-blue-50 text-blue-600',
                 flags.isWaitingApproval && 'bg-amber-50 text-amber-600',
                 flags.isDrafting && 'bg-violet-50 text-violet-600',
               )}
             >
               {flags.isCompleted && '已完成'}
               {flags.isFailed && '失败'}
-              {flags.isPreparing && '资料准备中'}
-              {flags.isWaitingApproval && '等待确认大纲'}
+              {flags.isPreparing && '资料搜索中'}
+              {flags.isWaitingSources && '待审核资料'}
+              {flags.isPreparingOutline && '大纲生成中'}
+              {flags.isWaitingApproval && '待确认大纲'}
               {flags.isDrafting && 'AI 撰写中'}
             </span>
           </div>
 
-          {/* ─── ProgressTracker（progress 阶段显示） ────────── */}
-          {tasks.length > 0 && (flags.isPreparing || flags.isDrafting) && (
+          {/* ─── ProgressTracker ───────────────────────────── */}
+          {tasks.length > 0 && (flags.isPreparing || flags.isPreparingOutline || flags.isDrafting) && (
             <div className="border-b border-border px-4 py-3">
               <ProgressTracker
                 tasks={tasks}
                 percentage={percentage}
                 projectStatus={statusData.project_status}
+                currentStep={statusData.current_step}
               />
             </div>
           )}
 
-          {/* ─── 🎯 大纲确认横幅（WAITING_OUTLINE_APPROVAL） ── */}
+          {/* ─── 🎯 资料审核面板（WAITING_FOR_SOURCES） ── */}
+          {flags.isWaitingSources && (
+            <div className="p-4">
+              {sourcesLoading ? (
+                <div className="flex items-center justify-center rounded-xl border border-blue-200 bg-blue-50/40 p-8">
+                  <div className="flex flex-col items-center gap-3">
+                    <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                    <p className="text-sm text-blue-600">加载资料来源...</p>
+                  </div>
+                </div>
+              ) : sourcesError || !sourcesData ? (
+                <div className="flex items-center justify-center rounded-xl border border-red-200 bg-red-50/40 p-8">
+                  <div className="flex flex-col items-center gap-3">
+                    <AlertCircle className="h-6 w-6 text-red-500" />
+                    <p className="text-sm text-red-600">加载资料来源失败</p>
+                    <p className="text-xs text-muted-foreground">请刷新页面重试</p>
+                  </div>
+                </div>
+              ) : sourcesData.sources.length === 0 ? (
+                <div className="flex items-center justify-center rounded-xl border border-dashed border-blue-200 bg-blue-50/20 p-8">
+                  <div className="flex flex-col items-center gap-3">
+                    <Search className="h-6 w-6 text-blue-400" />
+                    <p className="text-sm text-blue-600">暂无搜索到的资料</p>
+                    <p className="text-xs text-muted-foreground">请确认搜索是否已完成，或直接进入下一阶段</p>
+                  </div>
+                </div>
+              ) : (
+                <SourcesReview
+                  projectId={projectId!}
+                  sources={sourcesData.sources}
+                  topic={statusData.topic}
+                  onConfirm={handleReviewSources}
+                  isConfirming={reviewSourcesMutation.isPending}
+                  confirmError={reviewSourcesMutation.error?.message ?? null}
+                />
+              )}
+            </div>
+          )}
+
+          {/* ─── 🎯 大纲确认横幅（WAITING_FOR_OUTLINE） ── */}
           {flags.isWaitingApproval && (
             <div className="p-4">
               <OutlineApproval
@@ -430,8 +527,8 @@ export function WorkspacePage() {
             </div>
           )}
 
-          {/* ─── preparing_data 时的编辑器骨架 ──────────────── */}
-          {flags.isPreparing && (
+          {/* ─── preparing_data / preparing_outline 时的编辑器骨架 ── */}
+          {(flags.isPreparing || flags.isPreparingOutline) && (
             <div className="flex flex-1 items-center justify-center">
               <div className="flex flex-col items-center gap-3 text-center">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -449,11 +546,15 @@ export function WorkspacePage() {
         </div>
       }
 
-      // ── 右栏：引用/对话（可选） ─────────────────────────
+      // ── 右栏：日志/引用/对话 ─────────────────────────
       rightPane={
         <RightPanel
-          view={flags.isDrafting || flags.isCompleted ? 'citations' : 'agent-chat'}
+          view={
+            flags.isActive && !flags.isCompleted ? 'logs' : 'citations'
+          }
           onClose={() => {}}
+          logs={logs}
+          logsLoading={logsLoading}
         />
       }
     />

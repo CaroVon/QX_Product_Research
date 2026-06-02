@@ -33,6 +33,7 @@ from app.models.task import Task, TaskStatus, TaskType
 from app.models.project import Project, ProjectStatus
 from app.models.document import Document
 from app.models.document_block import DocumentBlock
+from app.models.project_log import ProjectLog, LogLevel
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ async def update_project_status(
 
         logger.info(
             "[DB] 更新项目状态 | project=%s | status=%s",
-            project_id, status.value,
+            project_id, status.value if status is not None else "(unchanged)",
         )
 
 
@@ -306,13 +307,13 @@ async def save_document_block(
                 DocumentBlock.order_index == order_index,
             )
         )
-        # 使用 .first() 而非 scalar_one_or_none()，避免存在重复行时抛出 MultipleResultsFound
-        block = existing.first()
+        # 使用 .scalars().first() 获取 ORM 对象，避免 Row 元组导致的 ''can't set attribute'' 错误
+        block = existing.scalars().first()
 
         if block:
             # 更新已有块的内容
-            block.content = content
-            block.citations = json_citations
+            setattr(block, 'content', content)
+            setattr(block, 'citations', json_citations)
             logger.info(
                 "[DB] 更新文档块 | project=%s | section=%s | order=%d",
                 project_id, section_title, order_index,
@@ -462,5 +463,71 @@ def update_project_outline_sync(
         update_project_outline(
             project_id=project_id,
             outline_content=outline_content,
+        )
+    )
+
+
+# ================================================================
+# 🆕 业务级时间轴日志 (ProjectLog) —— 用于前端实时进度展示
+# ================================================================
+
+# 日志序列号缓存（避免频繁查询 MAX(sequence)）
+_log_seq_cache: dict[str, int] = {}
+
+
+async def append_project_log(
+    project_id: str,
+    step: str,
+    message: str,
+    level: LogLevel = LogLevel.INFO,
+    icon: str | None = None,
+) -> ProjectLog:
+    """
+    向项目时间轴写入一条业务级日志。
+
+    前端右侧面板通过轮询 GET /{project_id}/logs 获取最新日志列表，
+    渲染为终端控制台风格的时间轴 UI，让用户实时感知 Agent 的执行进度。
+
+    Args:
+        project_id: 项目 UUID
+        step: 当前步骤标识 (searching, building_kb, writing_section 等)
+        message: 人类可读日志 (如 "🔍 正在深度抓取 Apple Vision Pro 竞品数据...")
+        level: 日志级别
+        icon: emoji 图标 (可选)
+    """
+    pid = uuid.UUID(project_id)
+
+    # 序列号递增
+    _log_seq_cache[project_id] = _log_seq_cache.get(project_id, 0) + 1
+    seq = _log_seq_cache[project_id]
+
+    async with get_celery_db() as db:
+        log_entry = ProjectLog(
+            project_id=pid,
+            sequence=seq,
+            level=level,
+            step=step,
+            message=message,
+            icon=icon,
+        )
+        db.add(log_entry)
+        return log_entry
+
+
+def append_project_log_sync(
+    project_id: str,
+    step: str,
+    message: str,
+    level: LogLevel = LogLevel.INFO,
+    icon: str | None = None,
+) -> None:
+    """同步包装：写入项目时间轴日志"""
+    _run_async(
+        append_project_log(
+            project_id=project_id,
+            step=step,
+            message=message,
+            level=level,
+            icon=icon,
         )
     )

@@ -23,6 +23,10 @@ export type {
   ProjectCreateRequest,
   ProjectCreateResponse,
   ProjectStatusResponse,
+  SourceItem,
+  SourcesListResponse,
+  SourceReviewRequest,
+  SourceReviewResponse,
   OutlineApproveRequest,
   OutlineApproveResponse,
   DocumentBlockListResponse,
@@ -79,7 +83,7 @@ export type SSEDraftEvent = SSESectionChunk | SSEDraftComplete
 
 // ─── 工作台视图状态 ────────────────────────────────────────────
 /** 右侧面板视图模式 */
-export type RightPanelView = 'closed' | 'citations' | 'agent-chat'
+export type RightPanelView = 'closed' | 'citations' | 'agent-chat' | 'logs'
 
 /** 工作台整体状态 */
 export interface WorkspaceState {

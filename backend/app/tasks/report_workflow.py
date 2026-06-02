@@ -44,7 +44,9 @@ from app.core.celery_db import (
     get_celery_db,
     get_sync_engine,
     get_crawled_data_path,
+    append_project_log_sync,
 )
+from app.models.project_log import LogLevel
 from app.models.task import TaskStatus, TaskType
 from app.models.project import ProjectStatus, Project
 
@@ -127,6 +129,8 @@ def prepare_sources_workflow(self, project_id: str):
 
     try:
         log_state(project_id, "searching", "阶段1 开始：搜索 + 抓取")
+        append_project_log_sync(project_id, "searching",
+                               "🔍 正在全网搜索相关资料...", LogLevel.INFO, "🔍")
 
         # ── 1. 搜索 + 抓取 ────────────────────────────────
         update_task_status_sync(project_id, TaskType.SEARCH, TaskStatus.PROCESSING)
@@ -135,8 +139,13 @@ def prepare_sources_workflow(self, project_id: str):
             from app.tasks.search_tasks import search_and_crawl
             search_result = search_and_crawl(project_id)
             logger.info("[PHASE 1] 搜索完成，共获取 %d 条结果", len(search_result))
+            append_project_log_sync(project_id, "searching",
+                                   f"📥 搜索完成，共获取 {len(search_result)} 条相关资料",
+                                   LogLevel.MILESTONE, "📥")
         except Exception as e:
             update_task_status_sync(project_id, TaskType.SEARCH, TaskStatus.FAILED, str(e))
+            append_project_log_sync(project_id, "searching",
+                                   f"❌ 搜索失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
             raise
 
         update_task_status_sync(project_id, TaskType.SEARCH, TaskStatus.COMPLETED)
@@ -197,25 +206,38 @@ def generate_outline_workflow(self, project_id: str):
 
     try:
         log_state(project_id, "building_knowledge", "阶段2 开始：知识库 + 大纲")
+        append_project_log_sync(project_id, "building_kb",
+                               "📚 正在进行向量库切片与索引...", LogLevel.INFO, "📚")
 
         # ── 1. 知识库构建 ────────────────────────────────
         update_task_status_sync(project_id, TaskType.BUILD_KNOWLEDGE_BASE, TaskStatus.PROCESSING)
         try:
             from app.tasks.knowledge_tasks import build_knowledge_base
             build_knowledge_base(project_id)
+            append_project_log_sync(project_id, "building_kb",
+                                   "✅ 知识库构建完成，向量索引已就绪", LogLevel.MILESTONE, "✅")
         except Exception as e:
             update_task_status_sync(project_id, TaskType.BUILD_KNOWLEDGE_BASE, TaskStatus.FAILED, str(e))
+            append_project_log_sync(project_id, "building_kb",
+                                   f"❌ 知识库构建失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
             raise
         update_task_status_sync(project_id, TaskType.BUILD_KNOWLEDGE_BASE, TaskStatus.COMPLETED)
 
         # ── 2. 大纲生成 ──────────────────────────────────
         update_task_status_sync(project_id, TaskType.GENERATE_OUTLINE, TaskStatus.PROCESSING)
+        append_project_log_sync(project_id, "generating_outline",
+                               "📝 正在规划产品研究大纲结构...", LogLevel.INFO, "📝")
         try:
             from app.tasks.writing_tasks import generate_outline_task
             outline = generate_outline_task(project_id)
             logger.info("[PHASE 2] 大纲生成完成 (%d 字符)", len(outline))
+            append_project_log_sync(project_id, "generating_outline",
+                                   f"📋 大纲规划完成，共 {len(extract_sections(outline))} 个章节",
+                                   LogLevel.MILESTONE, "📋")
         except Exception as e:
             update_task_status_sync(project_id, TaskType.GENERATE_OUTLINE, TaskStatus.FAILED, str(e))
+            append_project_log_sync(project_id, "generating_outline",
+                                   f"❌ 大纲生成失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
             raise
         update_task_status_sync(project_id, TaskType.GENERATE_OUTLINE, TaskStatus.COMPLETED)
 
@@ -315,6 +337,11 @@ def run_draft_sections_workflow(self, project_id: str):
         for idx, section_title in enumerate(section_titles):
             logger.info("[STEP %d/%d] 撰写章节: '%s'", idx + 1, len(section_titles), section_title)
 
+            # 🆕 业务日志：开始撰写章节
+            append_project_log_sync(project_id, "writing_section",
+                                   f"✍️ 正在撰写「{section_title}」({idx + 1}/{len(section_titles)})...",
+                                   LogLevel.INFO, "✍️")
+
             # 更新 Task 状态为 PROCESSING
             _update_section_task_status_sync(project_id, section_title, TaskStatus.PROCESSING)
 
@@ -336,21 +363,33 @@ def run_draft_sections_workflow(self, project_id: str):
                 _update_section_task_status_sync(project_id, section_title, TaskStatus.COMPLETED)
 
                 logger.info("  [OK] 章节 '%s' 撰写完成 (%d 字符)", section_title, len(content))
+                append_project_log_sync(project_id, "writing_section",
+                                       f"✅ 「{section_title}」撰写完成 ({len(content)} 字符)",
+                                       LogLevel.MILESTONE, "✅")
 
             except Exception as e:
                 logger.error("  [FAIL] 章节 '%s' 撰写失败: %s", section_title, str(e))
                 _update_section_task_status_sync(project_id, section_title, TaskStatus.FAILED, str(e))
+                append_project_log_sync(project_id, "writing_section",
+                                       f"❌ 「{section_title}」撰写失败: {str(e)[:100]}",
+                                       LogLevel.ERROR, "❌")
                 section_results.append(f"## {section_title}\n\n[本章节生成失败: {str(e)}]\n")
 
         # ─── 4. 组装 Markdown 报告 ────────────────────────────
         logger.info("[PHASE 3] 组装 Markdown 报告...")
         update_task_status_sync(project_id, TaskType.BUILD_REPORT, TaskStatus.PROCESSING)
+        append_project_log_sync(project_id, "building_report",
+                               "📄 正在排版组装完整报告...", LogLevel.INFO, "📄")
 
         try:
             from app.tasks.render_tasks import build_report_markdown
             md_path = build_report_markdown(project_id, section_results)
+            append_project_log_sync(project_id, "building_report",
+                                   "✅ 报告排版完成", LogLevel.MILESTONE, "✅")
         except Exception as e:
             update_task_status_sync(project_id, TaskType.BUILD_REPORT, TaskStatus.FAILED, str(e))
+            append_project_log_sync(project_id, "building_report",
+                                   f"❌ 报告排版失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
             raise
 
         update_task_status_sync(project_id, TaskType.BUILD_REPORT, TaskStatus.COMPLETED)
@@ -358,12 +397,18 @@ def run_draft_sections_workflow(self, project_id: str):
         # ─── 5. 生成 PDF ──────────────────────────────────────
         logger.info("[PHASE 3] 渲染 PDF...")
         update_task_status_sync(project_id, TaskType.GENERATE_PDF, TaskStatus.PROCESSING)
+        append_project_log_sync(project_id, "generating_pdf",
+                               "📕 正在生成横版 PPT 风格 PDF...", LogLevel.INFO, "📕")
 
         try:
             from app.tasks.render_tasks import generate_pdf_report
             pdf_path = generate_pdf_report(project_id, md_path)
+            append_project_log_sync(project_id, "generating_pdf",
+                                   "🎉 PDF 渲染完成！", LogLevel.MILESTONE, "🎉")
         except Exception as e:
             update_task_status_sync(project_id, TaskType.GENERATE_PDF, TaskStatus.FAILED, str(e))
+            append_project_log_sync(project_id, "generating_pdf",
+                                   f"❌ PDF 渲染失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
             raise
 
         update_task_status_sync(project_id, TaskType.GENERATE_PDF, TaskStatus.COMPLETED)

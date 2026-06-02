@@ -138,15 +138,54 @@ def generate_pdf_report(
     if not os.path.exists(md_full_path):
         raise FileNotFoundError(f"Markdown 文件未找到: {md_full_path}")
 
+    # ─── 从数据库获取 topic（用于封面图生成 Prompt）────────
+    import uuid as _uuid
+    from sqlalchemy import text
+    from app.core.celery_db import get_sync_engine
+
+    project_id_hex = _uuid.UUID(project_id).hex
+    engine = get_sync_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT topic FROM projects WHERE id = :pid"),
+            {"pid": project_id_hex},
+        ).fetchone()
+        topic = row[0] if row else "产品深度研究"
+
     # ─── 生成 PDF 文件名 ─────────────────────────────────────
     pdf_filename = md_relative_path.replace(".md", ".pdf")
     pdf_full_path = os.path.join(output_dir, pdf_filename)
+
+    # ─── 🆕 生成封面概念图（16:9 横版） ─────────────────────
+    cover_image_path = ""
+    try:
+        from app.llm.client import generate_image
+
+        # 封面图路径
+        img_dir = os.path.join(output_dir, "images")
+        os.makedirs(img_dir, exist_ok=True)
+        safe_topic_img = re.sub(r'[\\/:*?"<>|]', '_', topic)
+        cover_image_path = os.path.join(img_dir, f"{safe_topic_img}_concept.png")
+
+        # 调用生图 API（失败不抛异常，使用 CSS 渐变兜底）
+        image_ok = generate_image(
+            prompt=f"产品深度研究报告封面: {topic}",
+            output_path=cover_image_path,
+            retries=2,
+            timeout=120,
+        )
+        if not image_ok:
+            logger.warning("[TASK] 封面图生成失败，将使用 CSS 渐变兜底封面")
+            cover_image_path = ""
+    except Exception as e:
+        logger.warning("[TASK] 封面图生成异常 (将使用 CSS 渐变兜底): %s", str(e))
+        cover_image_path = ""
 
     # ─── 调用 PDF 生成器 ─────────────────────────────────────
     from app.report.pdf_generator import markdown_to_pdf
 
     try:
-        markdown_to_pdf(md_full_path, pdf_full_path)
+        markdown_to_pdf(md_full_path, pdf_full_path, cover_image=cover_image_path)
         logger.info("[TASK] PDF 渲染完成 | path=%s", pdf_full_path)
     except Exception as e:
         logger.error("[TASK] PDF 渲染失败: %s", str(e))

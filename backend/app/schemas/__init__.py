@@ -40,15 +40,15 @@ class ProjectCreateRequest(BaseModel):
         ...,
         min_length=2,
         max_length=500,
-        description="行业研究主题，例如：'AI眼镜行业'",
-        examples=["AI眼镜行业"],
+        description="产品分析主题，例如：'智能手表产品分析'",
+        examples=["智能手表产品分析"],
     )
 
 
 class ProjectResponse(BaseModel):
     """项目响应（列表/详情）"""
     id: uuid.UUID = Field(..., description="项目 UUID")
-    topic: str = Field(..., description="研报主题")
+    topic: str = Field(..., description="分析主题")
     status: str = Field(..., description="项目状态")
     outline_content: str | None = Field(None, description="暂存的大纲 Markdown")
     pdf_path: str | None = Field(None, description="PDF 文件路径")
@@ -68,6 +68,55 @@ class ProjectCreateResponse(BaseModel):
 
 
 # ================================================================
+# 🎯 资料预审核 (Source Review) Schemas —— 交互节点1
+# ================================================================
+
+class SourceItem(BaseModel):
+    """单个搜索结果/资料来源"""
+    index: int = Field(..., description="资料序号（从1开始）")
+    title: str = Field(..., description="资料标题或网页标题")
+    url: str = Field(..., description="资料 URL")
+    snippet: str = Field("", description="内容摘要（前200字）")
+    selected: bool = Field(default=True, description="是否被选中（前端可切换）")
+
+
+class SourceReviewRequest(BaseModel):
+    """
+    用户审核资料后的提交请求体。
+    用户在资料审核面板中可以取消勾选低质量资料，
+    或手动添加新的参考 URL，确认后提交。
+    """
+    selected_urls: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="用户最终选择的资料 URL 列表（剔除低质资料后的结果）",
+    )
+    additional_notes: str | None = Field(
+        None,
+        max_length=2000,
+        description="用户的补充说明（如：'重点关注官网数据，忽略论坛帖子'）",
+    )
+
+
+class SourceReviewResponse(BaseModel):
+    """资料审核确认后的响应"""
+    project_id: uuid.UUID = Field(..., description="项目 UUID")
+    new_status: str = Field(..., description="项目新状态（应为 'preparing_outline'）")
+    message: str = Field(..., description="提示消息")
+    kept_sources: int = Field(..., description="保留的资料数量")
+    celery_task_id: str | None = Field(None, description="已触发的大纲生成 Celery 任务 ID")
+
+
+class SourcesListResponse(BaseModel):
+    """资料列表响应 — 前端审核面板的数据源"""
+    project_id: uuid.UUID = Field(..., description="项目 UUID")
+    topic: str = Field(..., description="分析主题")
+    sources: list[SourceItem] = Field(default_factory=list, description="搜索结果/资料来源列表")
+    total_count: int = Field(0, description="资料总数")
+
+
+# ================================================================
 # 大纲审批 (Outline Approval) Schemas
 # ================================================================
 
@@ -83,13 +132,13 @@ class OutlineApproveRequest(BaseModel):
         max_length=50000,
         description="最终确认的大纲 Markdown 内容（用户可能已在前端修改）",
         examples=[
-            "# AI眼镜行业深度研究\n"
-            "## 1. 行业概述\n"
-            "## 2. 市场规模\n"
-            "## 3. 竞争格局\n"
-            "## 4. 技术趋势\n"
-            "## 5. 投资建议\n"
-            "## 6. 风险提示\n"
+            "# 智能手表产品深度分析\n"
+            "## 1. 产品概述\n"
+            "## 2. 市场定位\n"
+            "## 3. 竞品对比\n"
+            "## 4. 技术特性\n"
+            "## 5. 用户体验\n"
+            "## 6. 风险与挑战\n"
         ],
     )
 
@@ -126,9 +175,13 @@ class TaskResponse(BaseModel):
 class ProjectStatusResponse(BaseModel):
     """项目进度查询响应"""
     project_id: uuid.UUID = Field(..., description="项目 UUID")
-    topic: str = Field(..., description="研报主题")
+    topic: str = Field(..., description="分析主题")
     project_status: str = Field(..., description="项目整体状态")
     outline_content: str | None = Field(None, description="暂存大纲内容（WAITING_OUTLINE_APPROVAL 时有值）")
+    current_step: dict[str, Any] | None = Field(
+        None,
+        description="🆕 当前执行步骤（step/message/icon/level），从前端实时日志时间轴推导",
+    )
     progress: dict[str, Any] = Field(
         default_factory=lambda: {
             "total_tasks": 0,
@@ -247,7 +300,7 @@ class EditorReviseResponse(BaseModel):
 class ReportContentResponse(BaseModel):
     """报告全文内容响应"""
     project_id: uuid.UUID = Field(..., description="项目 UUID")
-    topic: str = Field(..., description="研报主题")
+    topic: str = Field(..., description="分析主题")
     sections: list[SectionContent] = Field(
         default_factory=list,
         description="按顺序排列的章节内容列表",
@@ -272,8 +325,35 @@ class SectionContent(BaseModel):
 class DownloadResponse(BaseModel):
     """下载链接响应"""
     project_id: uuid.UUID = Field(..., description="项目 UUID")
-    topic: str = Field(..., description="研报主题")
+    topic: str = Field(..., description="分析主题")
     download_url: str = Field(..., description="PDF 下载链接")
     filename: str = Field(..., description="推荐的文件名")
     file_size_bytes: int | None = Field(None, description="文件大小（字节）")
     report_ready: bool = Field(True, description="报告是否已就绪")
+
+
+# ================================================================
+# 🆕 项目时间轴日志 (ProjectLog) Schemas
+# ================================================================
+
+class ProjectLogResponse(BaseModel):
+    """单条项目时间轴日志"""
+    id: uuid.UUID = Field(..., description="日志 UUID")
+    sequence: int = Field(..., description="序号")
+    level: str = Field(..., description="日志级别: info | warn | error | milestone")
+    step: str = Field(..., description="步骤标识")
+    message: str = Field(..., description="人类可读日志消息")
+    icon: str | None = Field(None, description="emoji 图标")
+    created_at: datetime = Field(..., description="创建时间")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectLogListResponse(BaseModel):
+    """项目时间轴日志列表"""
+    project_id: uuid.UUID = Field(..., description="项目 UUID")
+    logs: list[ProjectLogResponse] = Field(
+        default_factory=list,
+        description="按 sequence 排序的日志列表",
+    )
+    total_count: int = Field(0, description="日志总数")

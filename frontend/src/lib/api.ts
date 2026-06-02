@@ -11,6 +11,9 @@ import type {
   ProjectCreateResponse,
   ProjectResponse,
   ProjectStatusResponse,
+  SourcesListResponse,
+  SourceReviewRequest,
+  SourceReviewResponse,
   OutlineApproveRequest,
   OutlineApproveResponse,
   DocumentBlockListResponse,
@@ -66,7 +69,7 @@ export const projectsApi = {
     return request(`/projects?skip=${skip}&limit=${limit}`)
   },
 
-  /** 创建项目（提交行研主题，触发节点1：资料准备与大纲生成） */
+  /** 创建项目（提交分析主题，触发节点1：资料准备与大纲生成） */
   create(data: ProjectCreateRequest): Promise<ProjectCreateResponse> {
     return request('/projects', {
       method: 'POST',
@@ -107,6 +110,36 @@ export const projectsApi = {
   /** 🆕 获取报告全文内容（按章节排列，含引用映射） */
   getContent(projectId: string): Promise<ReportContentResponse> {
     return request(`/projects/${projectId}/content`)
+  },
+
+  /**
+   * 🖥️ 获取项目时间轴日志（支持增量拉取）
+   * 前端右侧面板使用此 API 渲染实时终端控制台
+   */
+  getLogs(projectId: string, afterSequence = 0): Promise<import('@/types/api').ProjectLogListResponse> {
+    return request(`/projects/${projectId}/logs?after_sequence=${afterSequence}`)
+  },
+
+  /**
+   * 🎯 获取资料来源列表（交互节点1）
+   * 返回搜索结果的标题、URL、摘要，供用户审核
+   */
+  getSources(projectId: string): Promise<SourcesListResponse> {
+    return request(`/projects/${projectId}/sources`)
+  },
+
+  /**
+   * 🎯 提交资料审核结果（交互节点1确认）
+   * 将筛选后的 URL 列表提交给后端，触发阶段2：大纲生成
+   */
+  reviewSources(
+    projectId: string,
+    data: SourceReviewRequest,
+  ): Promise<SourceReviewResponse> {
+    return request(`/projects/${projectId}/review-sources`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   },
 }
 

@@ -6,6 +6,7 @@
 将 Markdown 分析报告转化为 16:9 横版路演级 PDF:
   - 真正 16:9 横版页面 (320mm × 180mm，比例 1.778:1)
   - 杂志级沉浸式封面 (全屏概念图 + 暗色遮罩)
+  - 🆕 CSS 高级渐变兜底封面（生图失败时自动启用）
   - PPT 大字号排版体系 (正文 ≥ 14pt)
   - 强制单页单主题 (h2 → page-break-before)
   - 页眉章节导航 + 页脚页码（滑动编号）
@@ -56,7 +57,8 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
         md_path:      Markdown 文件路径
         pdf_path:     PDF 输出路径
         cover_image:  (可选) 封面概念图的绝对/相对路径。
-                      若文件存在则用于封面全屏背景，否则使用纯色深空灰封面。
+                      若文件存在则用于封面全屏背景，
+                      🆕 若不存在则使用 CSS 高级渐变兜底。
     """
     print(f"[PPT PDF] 横版路演级 PDF 渲染启动...")
 
@@ -78,14 +80,16 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     )
 
     # ── 4. 封面图逻辑 ─────────────────────────────────────
-    # 检测 cover_image 是否存在，不存在则回退纯色封面
+    # 检测 cover_image 是否存在，不存在则回退 CSS 渐变封面
     has_cover_bg = bool(cover_image) and os.path.isfile(cover_image)
     if has_cover_bg:
-        # 转为 file:// 绝对路径 (WeasyPrint 跨平台最佳实践)
         abs_img = os.path.abspath(cover_image).replace("\\", "/")
         print(f"[PPT PDF] 封面背景图: {abs_img}")
     else:
-        print(f"[PPT PDF] 未检测到封面图，使用纯色深空灰封面")
+        if cover_image:
+            print(f"[PPT PDF] 封面图未找到 ({cover_image})，使用 CSS 渐变兜底")
+        else:
+            print(f"[PPT PDF] 未提供封面图，使用 CSS 高级渐变兜底封面")
 
     # ── 5. 构建 PPT 风格 HTML + CSS ───────────────────────
     premium_html = _build_html(report_title, html_body, has_cover_bg, cover_image)
@@ -120,19 +124,15 @@ def _build_html(
 <head>
 <meta charset="utf-8">
 <style>
-    ═══════════════════════════════════════════════════════
+    /* ========================================================
     【页面基础】—— 真正 16:9 横版 = 320mm × 180mm
     比例 1.778:1，完美适配现代宽屏显示器和投影
-    ═══════════════════════════════════════════════════════
+    ======================================================== */
     @page {{
         size: 320mm 180mm;
-        margin: 0 16mm 10mm 16mm;  /* 上下收紧，左右留呼吸空间 */
+        margin: 0 16mm 10mm 16mm;
         background-color: {COLOR["bg_body"]};
 
-        /*
-         * 正文页顶部页眉：深色窄条 + 左侧章节标识 + 右侧机构名。
-         * 使用 @top-left / @top-right 原生分页媒介实现。
-         */
         @top-left {{
             content: string(chapter);
             font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
@@ -152,19 +152,11 @@ def _build_html(
             padding-right: 2mm;
         }}
         @top-center {{
-            /*
-             * 一条横贯顶部的极细亮蓝线，模拟 PPT 顶栏装饰条。
-             * 内容为空，纯装饰；通过 border-bottom 实现细线。
-             */
             content: "";
             border-bottom: 0.6px solid {COLOR["accent"]};
             width: 100%;
         }}
 
-        /*
-         * 正文页底部页脚：左侧页码 + 右侧机密标注。
-         * 通过 padding-top 制造与正文的呼吸感。
-         */
         @bottom-left {{
             content: counter(page) " /";
             font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -183,7 +175,7 @@ def _build_html(
     }}
 
     /*
-     * 封面页特殊规则：移除页眉页脚，纯色深空背景铺满整页 (含 bleed)
+     * 封面页特殊规则：移除页眉页脚，铺满整页
      */
     @page cover {{
         size: 320mm 180mm;
@@ -196,40 +188,35 @@ def _build_html(
         @bottom-right {{ content: none; }}
     }}
 
-    ═══════════════════════════════════════════════════════
+    /* ========================================================
     【全局重置】—— 保证跨平台字体一致性
-    ═══════════════════════════════════════════════════════
+    ======================================================== */
     *, *::before, *::after {{ box-sizing: border-box; }}
 
     body {{
         font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC',
                      'WenQuanYi Zen Hei', 'Helvetica Neue', sans-serif;
         color: {COLOR["body_text"]};
-        line-height: 1.85;           /* PPT 级舒展行距 */
-        font-size: 14pt;            /* PPT 基础字号，远大于传统文档 */
+        line-height: 1.85;
+        font-size: 14pt;
         margin: 0;
         padding: 0;
     }}
 
-    ═══════════════════════════════════════════════════════
+    /* ========================================================
     【封面】—— 杂志级沉浸式开屏
-    ═══════════════════════════════════════════════════════
+    ======================================================== */
     .cover {{
         display: block;
         position: relative;
         width: 100%;
-        /* 16:9 封面无页眉页脚，取满 180mm 高度 */
         height: 180mm;
-        page: cover;                /* 绑定 @page cover 规则 */
-        page-break-after: always;   /* 确保正文从新页开始 */
+        page: cover;
+        page-break-after: always;
         overflow: hidden;
         color: {COLOR["white"]};
     }}
 
-    /*
-     * 全屏背景图：绝对定位铺满封面，z-index: 0 置于底层。
-     * WeasyPrint 中 img 配合 width/height 100% + object-fit 表现稳定。
-     */
     .cover-bg-img {{
         position: absolute;
         top: 0;
@@ -240,10 +227,6 @@ def _build_html(
         object-fit: cover;
     }}
 
-    /*
-     * 暗色遮罩层：位于图片之上、文字之下，确保白色标题可读。
-     * 使用 rgba 半透明黑色，z-index: 1。
-     */
     .cover-overlay {{
         position: absolute;
         top: 0;
@@ -254,7 +237,20 @@ def _build_html(
         background-color: {COLOR["overlay"]};
     }}
 
-    /* 封面所有文字层统一 z-index: 2，位于遮罩之上 */
+    /*
+     * CSS 科技感渐变兜底封面
+     */
+    .cover-gradient-bg {{
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+        background:
+            linear-gradient(135deg, #0d1117 0%, #0f1a2e 30%, #0d1525 60%, #0a0e14 100%);
+    }}
+
     .cover-content {{
         position: relative;
         z-index: 2;
@@ -262,7 +258,6 @@ def _build_html(
         height: 100%;
     }}
 
-    /* 标签条 (e.g. "PRODUCT DEEP RESEARCH") */
     .cover-tag {{
         display: inline-block;
         font-size: 9pt;
@@ -275,7 +270,6 @@ def _build_html(
         margin-bottom: 14mm;
     }}
 
-    /* 封面主标题 */
     .cover-title {{
         font-size: 34pt;
         font-weight: 700;
@@ -285,7 +279,6 @@ def _build_html(
         letter-spacing: 2px;
     }}
 
-    /* 装饰分割线 (亮蓝短条) */
     .cover-divider {{
         width: 45mm;
         height: 4px;
@@ -293,7 +286,6 @@ def _build_html(
         margin-bottom: 10mm;
     }}
 
-    /* 副标题 */
     .cover-subtitle {{
         font-size: 14pt;
         color: #bcc8e0;
@@ -301,7 +293,6 @@ def _build_html(
         margin-bottom: 2mm;
     }}
 
-    /* 封面底部机构信息 */
     .cover-footer {{
         position: absolute;
         bottom: 14mm;
@@ -312,11 +303,10 @@ def _build_html(
         z-index: 2;
     }}
 
-    ═══════════════════════════════════════════════════════
+    /* ========================================================
     【正文幻灯片区域】—— slide-deck
-    每张 "幻灯片" = 一个 h2 章节块，间距拉开，强制分页
-    16:9 宽屏排版：充分利用横向空间，正文区域宽度约 288mm
-    ═══════════════════════════════════════════════════════
+    每张 "幻灯片" = 一个 h2 章节块，强制分页
+    ======================================================== */
     .slide-deck {{
         display: block;
         padding-top: 4mm;
@@ -326,35 +316,23 @@ def _build_html(
     /*
      * h2 核心规则：强制 page-break-before → 每个章节从新页开始。
      * 这是实现 "PPT 翻页感" 的关键。
-     * page-break-inside: avoid 防止标题孤行。
      */
     h2 {{
         font-size: 20pt;
         font-weight: 700;
         color: {COLOR["h2_color"]};
         font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
-
-        /* PPT 左侧装饰色块 (通过 border-left 模拟) */
         border-left: 5px solid {COLOR["accent"]};
         padding-left: 12px;
         margin-top: 0;
         margin-bottom: 16pt;
         line-height: 1.35;
-
-        /*
-         * 同时更新页眉中的章节名称 (string-set)。
-         * 每遇到一个新的 h2，页眉自动切换为当前章节标题。
-         */
         string-set: chapter self;
-
-        page-break-before: always;   /* 核心：每章一页，幻灯翻页 */
+        page-break-before: always;
         page-break-inside: avoid;
         page-break-after: avoid;
     }}
 
-    /*
-     * h3：章节内子标题，无需换页但保持醒目。
-     */
     h3 {{
         font-size: 16pt;
         font-weight: 600;
@@ -373,17 +351,15 @@ def _build_html(
         margin-bottom: 10pt;
     }}
 
-    /* 正文段落 */
     p {{
         margin-top: 0;
         margin-bottom: 14pt;
         text-align: justify;
-        text-indent: 0;             /* PPT 风格：段落间留白代替首行缩进 */
-        orphans: 3;                 /* 至少保留 3 行在同一页 */
+        text-indent: 0;
+        orphans: 3;
         widows: 3;
     }}
 
-    /* 列表 */
     ul, ol {{
         margin-top: 8pt;
         margin-bottom: 16pt;
@@ -396,7 +372,6 @@ def _build_html(
         line-height: 1.75;
     }}
 
-    /* 引用块 —— 模拟 PPT 中的 "要点卡片" */
     blockquote {{
         display: block;
         margin: 20pt 0;
@@ -410,7 +385,6 @@ def _build_html(
         page-break-inside: avoid;
     }}
 
-    /* 图片：居中展示，带轻阴影 */
     img {{
         max-width: 85%;
         display: block;
@@ -421,7 +395,6 @@ def _build_html(
         page-break-inside: avoid;
     }}
 
-    /* 表格 */
     table {{
         width: 100%;
         border-collapse: collapse;
@@ -443,7 +416,6 @@ def _build_html(
         background-color: {COLOR["white"]};
     }}
 
-    /* 代码块 */
     pre {{
         background-color: #1e2233;
         color: #c8d6e5;
@@ -459,7 +431,6 @@ def _build_html(
         font-size: 9.5pt;
     }}
 
-    /* 脚注区域 */
     .footnotes {{
         margin-top: 40pt;
         border-top: 1px dashed {COLOR["muted"]};
@@ -468,9 +439,6 @@ def _build_html(
         color: {COLOR["muted"]};
     }}
 
-    /*
-     * 水平线：PPT 风格的精美分隔
-     */
     hr {{
         border: none;
         height: 1px;
@@ -498,7 +466,7 @@ def _build_cover(title: str, has_bg: bool, img_path: str) -> str:
     """
     构建杂志级封面 HTML 片段。
     - 有背景图时：全屏图 + 暗色遮罩 + 白色文字
-    - 无背景图时：纯深空灰封面 + 装饰几何元素 + 亮色文字
+    - 无背景图时：CSS 高级渐变 + 暗色遮罩 + 白色文字
     """
 
     if has_bg:
@@ -509,9 +477,9 @@ def _build_cover(title: str, has_bg: bool, img_path: str) -> str:
         )
         overlay_html = '<div class="cover-overlay"></div>'
     else:
-        # 纯色背景——封面自带深空灰 (由 @page cover 的 background-color 提供)
-        bg_html = ""
-        overlay_html = ""
+        # 🆕 CSS 渐变兜底：深空灰 + 亮蓝光晕 + 紫色点缀
+        bg_html = '<div class="cover-gradient-bg"></div>'
+        overlay_html = '<div class="cover-overlay"></div>'
 
     return f"""
     <div class="cover">

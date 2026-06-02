@@ -43,7 +43,10 @@ from app.schemas import (
     SourceReviewRequest,
     SourceReviewResponse,
     SourcesListResponse,
+    ProjectLogResponse,
+    ProjectLogListResponse,
 )
+from app.models.project_log import ProjectLog
 from app.tasks.report_workflow import (
     run_full_report_workflow,
     prepare_sources_workflow,
@@ -205,12 +208,30 @@ async def get_project_status(
         "percentage": percentage,
     }
 
+    # 🆕 推导 current_step（从最新 ProjectLog 获取）
+    current_step = None
+    log_result = await db.execute(
+        select(ProjectLog)
+        .where(ProjectLog.project_id == project_id)
+        .order_by(ProjectLog.sequence.desc())
+        .limit(1)
+    )
+    latest_log = log_result.scalar_one_or_none()
+    if latest_log:
+        current_step = {
+            "step": latest_log.step,
+            "message": latest_log.message,
+            "icon": latest_log.icon,
+            "level": latest_log.level.value if latest_log.level else "info",
+        }
+
     return ProjectStatusResponse(
         project_id=project.id,
         topic=project.topic,
         project_status=project.status,
         outline_content=project.outline_content,
         progress=progress,
+        current_step=current_step,
         tasks=[TaskResponse.model_validate(orm_to_dict(t)) for t in tasks],
     )
 
@@ -814,3 +835,52 @@ async def list_projects(
     )
     projects = result.scalars().all()
     return [ProjectResponse.model_validate(orm_to_dict(p)) for p in projects]
+
+
+# ================================================================
+# 🆕 GET /api/v1/projects/{project_id}/logs —— 时间轴实时日志
+# ================================================================
+
+@router.get("/{project_id}/logs", response_model=ProjectLogListResponse)
+async def list_project_logs(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    after_sequence: int = Query(0, ge=0, description="仅返回 sequence > 此值的日志（增量拉取）"),
+):
+    """
+    🖥️ **实时运行日志**：获取项目的业务级时间轴日志。
+
+    前端右侧面板通过此 API 获取 Agent 后台执行的实时进度，
+    渲染为终端控制台风格的时间轴 UI。
+
+    支持增量拉取：
+    - 前端记录 `lastSequence`，每次轮询时传 `after_sequence` 参数
+    - 仅返回新日志条目，避免重复传输
+
+    参数:
+    - **after_sequence**: 增量拉取的起始序号（不含）
+    """
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
+
+    # 查询日志（按 sequence 排序，支持增量拉取）
+    log_query = (
+        select(ProjectLog)
+        .where(
+            ProjectLog.project_id == project_id,
+            ProjectLog.sequence > after_sequence,
+        )
+        .order_by(ProjectLog.sequence.asc())
+    )
+    log_result = await db.execute(log_query)
+    logs = log_result.scalars().all()
+
+    return ProjectLogListResponse(
+        project_id=project.id,
+        logs=[ProjectLogResponse.model_validate(orm_to_dict(l)) for l in logs],
+        total_count=len(logs),
+    )

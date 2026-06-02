@@ -35,14 +35,18 @@ export interface ProjectResponse {
  *
  * 状态流转:
  *   preparing_data
- *     → waiting_outline_approval (等待用户确认大纲)
- *       → drafting (用户确认大纲后开始撰写)
- *         → completed
+ *     → waiting_for_sources (🛑 等待用户审核资料)
+ *       → preparing_outline (用户确认资料后，生成大纲)
+ *         → waiting_for_outline (🛑 等待用户确认大纲)
+ *           → drafting (用户确认大纲后开始撰写)
+ *             → completed
  *   any → failed
  */
 export type ProjectStatusEnum =
   | 'preparing_data'
-  | 'waiting_outline_approval'
+  | 'waiting_for_sources'
+  | 'preparing_outline'
+  | 'waiting_for_outline'
   | 'drafting'
   | 'completed'
   | 'failed'
@@ -51,6 +55,36 @@ export interface ProjectCreateResponse {
   project: ProjectResponse
   celery_task_id: string
   message: string
+}
+
+// ─── 资料审核 (Source Review) ───────────────────────────────────
+
+export interface SourceItem {
+  index: number
+  title: string
+  url: string
+  snippet: string
+  selected: boolean
+}
+
+export interface SourcesListResponse {
+  project_id: string
+  topic: string
+  sources: SourceItem[]
+  total_count: number
+}
+
+export interface SourceReviewRequest {
+  selected_urls: string[]
+  additional_notes?: string
+}
+
+export interface SourceReviewResponse {
+  project_id: string
+  new_status: string
+  message: string
+  kept_sources: number
+  celery_task_id: string | null
 }
 
 // ─── 大纲审批 (Outline Approval) ───────────────────────────────
@@ -106,11 +140,19 @@ export interface ProgressInfo {
   percentage: number
 }
 
+export interface CurrentStep {
+  step: string
+  message: string
+  icon: string | null
+  level: string
+}
+
 export interface ProjectStatusResponse {
   project_id: string
   topic: string
   project_status: ProjectStatusEnum
   outline_content: string | null
+  current_step: CurrentStep | null
   progress: ProgressInfo
   tasks: TaskResponse[]
 }
@@ -156,6 +198,24 @@ export interface DownloadResponse {
 }
 
 // ─── 编辑器 AI 改写 (Editor Revise) ────────────────────────────
+
+// ─── 🆕 项目时间轴日志 (ProjectLog) ───────────────────────────────
+
+export interface ProjectLogResponse {
+  id: string
+  sequence: number
+  level: 'info' | 'warn' | 'error' | 'milestone'
+  step: string
+  message: string
+  icon: string | null
+  created_at: string
+}
+
+export interface ProjectLogListResponse {
+  project_id: string
+  logs: ProjectLogResponse[]
+  total_count: number
+}
 
 /** 编辑器 AI 改写请求 */
 export interface EditorReviseRequest {
@@ -225,8 +285,10 @@ export const TASK_STEP_LABELS: Record<TaskTypeEnum, string> = {
  * 状态机步骤标签（含交互节点标记）
  */
 export const STATE_MACHINE_STEPS = [
-  { status: 'preparing_data' as ProjectStatusEnum, label: '资料准备', icon: '🔍', interactive: false },
-  { status: 'waiting_outline_approval' as ProjectStatusEnum, label: '大纲确认', icon: '📋', interactive: true },
+  { status: 'preparing_data' as ProjectStatusEnum, label: '资料搜索', icon: '🔍', interactive: false },
+  { status: 'waiting_for_sources' as ProjectStatusEnum, label: '审核资料', icon: '📋', interactive: true },
+  { status: 'preparing_outline' as ProjectStatusEnum, label: '大纲生成', icon: '📝', interactive: false },
+  { status: 'waiting_for_outline' as ProjectStatusEnum, label: '确认大纲', icon: '📋', interactive: true },
   { status: 'drafting' as ProjectStatusEnum, label: 'AI 撰写中', icon: '✍️', interactive: false },
   { status: 'completed' as ProjectStatusEnum, label: '报告完成', icon: '✅', interactive: false },
 ] as const

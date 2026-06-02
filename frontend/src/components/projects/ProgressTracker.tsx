@@ -25,6 +25,7 @@ interface ProgressTrackerProps {
   tasks: TaskResponse[]
   percentage: number
   projectStatus: string
+  currentStep?: { step: string; message: string; icon: string | null; level: string } | null
 }
 
 /**
@@ -39,7 +40,7 @@ interface ProgressTrackerProps {
  * - 待处理（pending）   → 灰色空心
  * - 失败（failed）      → 红色叉号
  */
-export function ProgressTracker({ tasks, percentage, projectStatus }: ProgressTrackerProps) {
+export function ProgressTracker({ tasks, percentage, projectStatus, currentStep }: ProgressTrackerProps) {
   // ─── 构建步骤状态映射 ────────────────────────────────────────
   const stepStatusMap = new Map<TaskTypeEnum, TaskStatusEnum>()
   for (const step of PROGRESS_STEPS) {
@@ -91,10 +92,10 @@ export function ProgressTracker({ tasks, percentage, projectStatus }: ProgressTr
         <span className="ml-1 text-sm text-muted-foreground">%</span>
         <p className="mt-1 text-sm text-muted-foreground">
           {isCompleted
-            ? '研究报告已生成完毕'
+            ? '分析报告已生成完毕'
             : isFailed
               ? '生成过程中出现错误'
-              : '正在生成行业研究报告...'}
+              : currentStep?.message ?? '正在生成产品分析报告...'}
         </p>
       </div>
 
