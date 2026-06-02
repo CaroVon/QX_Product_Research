@@ -106,10 +106,10 @@ def build_knowledge_base(self: KnowledgeTask, project_id: str) -> dict[str, Any]
     # chroma_dir = settings.CHROMA_PERSIST_DIR_TEMPLATE.format(tenant_id=tenant_id)
     # bm25_dir = settings.BM25_PERSIST_DIR_TEMPLATE.format(tenant_id=tenant_id)
 
-    # 使用配置中的持久化目录（跨平台兼容，不再硬编码 /app）
+    # 使用配置中的持久化目录 + per-project 子目录（根治多项目覆盖）
     os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)
     os.makedirs(settings.BM25_PERSIST_DIR, exist_ok=True)
-    build_vector_store(all_chunks_with_meta)
+    build_vector_store(all_chunks_with_meta, project_id=project_id)
 
     # ─── 5. 清理临时文件 ──────────────────────────────────────
     try:

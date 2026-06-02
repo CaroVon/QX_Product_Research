@@ -8,8 +8,8 @@ def plan_section_queries(topic: str, section_title: str, num_queries: int = 3) -
     llm = get_llm()
 
     prompt = f"""
-你是一名资深的行业研究专家和高级搜索策略师。
-为了撰写一份专业的行业研究报告，你需要将特定的【报告章节】拆解为 {num_queries} 个具体的【底层检索词（Query）】。
+你是一名资深的产品分析专家和高级搜索策略师。
+为了撰写一份专业的产品分析报告，你需要将特定的【报告章节】拆解为 {num_queries} 个具体的【底层检索词（Query）】。
 
 报告主题：{topic}
 当前撰写章节：{section_title}

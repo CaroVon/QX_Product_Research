@@ -14,13 +14,15 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # ─── Broker 地址 ──────────────────────────────────────────────
-# 当没有 Redis 可用时，使用内存传输（仅适用于本地开发/测试）
+# 当没有 Redis 可用时，使用内存传输 + eager 模式（任务同步执行）
 # 生产环境请确保设置了 CELERY_BROKER_URL
+_LOCAL_DEV_MODE = False
 _broker_url = settings.CELERY_BROKER_URL
 _backend_url = settings.CELERY_RESULT_BACKEND
 if not _broker_url:
     _broker_url = "memory://"
     _backend_url = "cache+memory://"
+    _LOCAL_DEV_MODE = True
 
 # ─── 创建 Celery 应用 ─────────────────────────────────────────
 celery_app = Celery(
@@ -58,4 +60,6 @@ celery_app.conf.update(
     # 默认重试策略
     task_default_retry_delay=10,  # 首次重试延迟 10 秒
     task_max_retries=3,  # 最多重试 3 次
+    # 本地开发模式：有 Redis 时异步执行（需启动 Celery Worker），无 Redis 时同步执行
+    task_always_eager=_LOCAL_DEV_MODE,
 )

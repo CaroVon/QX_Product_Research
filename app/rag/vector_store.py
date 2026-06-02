@@ -1,58 +1,146 @@
+"""
+============================================================
+向量存储引擎 (Vector Store + BM25 持久化)
+—— 每个项目使用独立子目录，根除多项目并发覆盖
+============================================================
+"""
 import os
 import pickle
+import logging
+import warnings
+
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from sentence_transformers import SentenceTransformer
 
+logger = logging.getLogger(__name__)
+
+
 class LocalEmbeddingModel:
-    def __init__(self):
-        self.model = SentenceTransformer(
-            "/root/autodl-tmp/models/embedding/bge-small-zh-v1.5"
-        )
+    """Embedding 模型封装 —— 线程安全单例，模型路径从配置读取。"""
+
+    _instance = None
+    _model = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def _get_model(self):
+        if self._model is None:
+            try:
+                from app.core.config import get_settings
+                settings = get_settings()
+                model_path = settings.EMBEDDING_MODEL_PATH
+            except ImportError:
+                model_path = os.environ.get(
+                    "EMBEDDING_MODEL_PATH", "BAAI/bge-small-zh-v1.5",
+                )
+            logger.info("[Embedding] 正在加载模型: %s", model_path)
+            self._model = SentenceTransformer(model_path)
+            logger.info("[Embedding] 模型加载完成")
+        return self._model
 
     def embed_documents(self, texts):
-        return self.model.encode(texts).tolist()
+        return self._get_model().encode(texts).tolist()
 
     def embed_query(self, text):
-        return self.model.encode(text).tolist()
+        return self._get_model().encode(text).tolist()
+
 
 embedding_model = LocalEmbeddingModel()
 
 
-def build_vector_store(chunk_data_list):
+def _resolve_persist_dirs(project_id: str | None = None):
     """
-    接收带有元数据的切片列表
-    chunk_data_list 格式要求: [{"content": "...", "url": "https://..."}]
+    解析向量库持久化目录。
+
+    优先使用集中配置中的路径；当 project_id 提供时创建
+    per-project 子目录，杜绝多项目并发覆盖。
     """
+    try:
+        from app.core.config import get_settings
+        settings = get_settings()
+        chroma_base = settings.CHROMA_PERSIST_DIR
+        bm25_base = settings.BM25_PERSIST_DIR
+    except ImportError:
+        chroma_base = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
+        bm25_base = os.environ.get("BM25_PERSIST_DIR", "./bm25_db")
+
+    if project_id:
+        chroma_dir = os.path.join(chroma_base, project_id)
+        bm25_dir = os.path.join(bm25_base, project_id)
+    else:
+        warnings.warn(
+            "build_vector_store() 未提供 project_id——使用共享向量库目录。"
+            "多项目并发时数据会互相覆盖，请尽快传入 project_id。",
+            FutureWarning,
+            stacklevel=3,
+        )
+        chroma_dir = chroma_base
+        bm25_dir = bm25_base
+
+    return chroma_dir, bm25_dir
+
+
+def build_vector_store(
+    chunk_data_list: list[dict],
+    project_id: str | None = None,
+):
+    """
+    接收带有元数据的切片列表，构建 Chroma + BM25 持久化存储。
+
+    Args:
+        chunk_data_list: [{"content": "...", "url": "https://..."}, ...]
+        project_id:      项目 UUID 字符串（用于 per-project 向量库隔离）。
+
+    Returns:
+        Chroma vector_store 实例。
+    """
+    if not chunk_data_list:
+        logger.warning("build_vector_store: chunk_data_list 为空，跳过构建")
+        return None
+
+    chroma_dir, bm25_dir = _resolve_persist_dirs(project_id)
+
+    # ── 构建 LangChain Document 列表 ────────────────────
     docs = []
     for item in chunk_data_list:
-        # 这里提取纯文本用于生成向量，提取 url 放入 metadata 用于后续打分
         doc = Document(
-            page_content=item.get("content", ""), 
-            metadata={"url": item.get("url", "unknown")}
+            page_content=item.get("content", ""),
+            metadata={"url": item.get("url", "unknown")},
         )
         docs.append(doc)
-    
-    # 1. 持久化存储到 Chroma (用于向量检索)
+
+    # ── 1. 持久化到 Chroma（向量检索） ──────────────────
+    os.makedirs(chroma_dir, exist_ok=True)
     vector_store = Chroma.from_documents(
         documents=docs,
         embedding=embedding_model,
-        persist_directory="./chroma_db"
+        persist_directory=chroma_dir,
     )
-    
-    # 2. 持久化原始 Chunks 到本地 (用于 BM25 检索)
-    import os, pickle
-    os.makedirs("./bm25_db", exist_ok=True)
-    with open("./bm25_db/docs.pkl", "wb") as f:
+    logger.info("Chroma 向量库已构建: %s (%d 个文档)", chroma_dir, len(docs))
+
+    # ── 2. 持久化原始 Chunks 到本地（BM25 检索） ────────
+    os.makedirs(bm25_dir, exist_ok=True)
+    bm25_path = os.path.join(bm25_dir, "docs.pkl")
+    with open(bm25_path, "wb") as f:
         pickle.dump(docs, f)
-        
-    print("[INFO] Vector Store 和 BM25 本地语料均已构建完毕 (包含 Metadata)。")
+    logger.info("BM25 语料已构建: %s (%d 个文档)", bm25_path, len(docs))
+
+    logger.info(
+        "Vector Store + BM25 构建完毕 (project=%s, chunks=%d)",
+        project_id or "(共享)", len(docs),
+    )
     return vector_store
+
 
 if __name__ == "__main__":
     sample_chunks = [
-        "AI glasses market is growing rapidly.",
-        "Meta and RayBan launched smart glasses.",
-        "AI wearable devices are becoming popular."
+        {"content": "AI glasses market is growing rapidly.", "url": "https://example.com/1"},
+        {"content": "Meta and RayBan launched smart glasses.", "url": "https://example.com/2"},
+        {"content": "AI wearable devices are becoming popular.", "url": "https://example.com/3"},
     ]
     db = build_vector_store(sample_chunks)
+    print("Vector store built successfully.")

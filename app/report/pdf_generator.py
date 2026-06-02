@@ -14,10 +14,14 @@
   - 商业汇报标准：合理留白、清晰层级、专业配色
 """
 
+import logging
 import os
 import re
+
 import markdown2
 from weasyprint import HTML
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════
@@ -60,7 +64,7 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
                       若文件存在则用于封面全屏背景，
                       🆕 若不存在则使用 CSS 高级渐变兜底。
     """
-    print(f"[PPT PDF] 横版路演级 PDF 渲染启动...")
+    logger.info("横版路演级 PDF 渲染启动...")
 
     # ── 1. 读取 Markdown ──────────────────────────────────
     with open(md_path, "r", encoding="utf-8") as f:
@@ -84,12 +88,12 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     has_cover_bg = bool(cover_image) and os.path.isfile(cover_image)
     if has_cover_bg:
         abs_img = os.path.abspath(cover_image).replace("\\", "/")
-        print(f"[PPT PDF] 封面背景图: {abs_img}")
+        logger.info("封面背景图: %s", abs_img)
     else:
         if cover_image:
-            print(f"[PPT PDF] 封面图未找到 ({cover_image})，使用 CSS 渐变兜底")
+            logger.info("封面图未找到 (%s)，使用 CSS 渐变兜底", cover_image)
         else:
-            print(f"[PPT PDF] 未提供封面图，使用 CSS 高级渐变兜底封面")
+            logger.info("未提供封面图，使用 CSS 高级渐变兜底封面")
 
     # ── 5. 构建 PPT 风格 HTML + CSS ───────────────────────
     premium_html = _build_html(report_title, html_body, has_cover_bg, cover_image)
@@ -100,7 +104,7 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
         f.write(premium_html)
 
     HTML(filename=temp_html_path).write_pdf(pdf_path)
-    print(f"[PPT PDF ✓] 横版路演 PDF 已生成: {pdf_path}")
+    logger.info("横版路演 PDF 已生成: %s", pdf_path)
 
 
 # ══════════════════════════════════════════════════════════

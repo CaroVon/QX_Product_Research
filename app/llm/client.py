@@ -2,52 +2,101 @@
 ============================================================
 LLM 客户端 —— 文本引擎 (DeepSeek) + 图像引擎 (硅基流动 FLUX.1)
 ============================================================
+
+所有配置从集中式 Settings 读取，消除了模块级 load_dotenv() 副作用。
+当 backend 包不可用时（CLI 模式），回退到环境变量读取。
 """
+
+from __future__ import annotations
+
+import base64
+import logging
 import os
 import time
-import base64
+
 import requests
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-load_dotenv()
+logger = logging.getLogger(__name__)
+
 
 # ══════════════════════════════════════════════════════════
-# 文本引擎：DeepSeek Chat
+# 配置解析 —— 优先 Settings 单例，回退环境变量
 # ══════════════════════════════════════════════════════════
+
+def _get_config() -> dict:
+    """
+    从集中式 Settings 或环境变量获取所有 LLM 相关配置。
+
+    返回字典避免模块级副作用——调用方在函数体内调用此函数。
+    """
+    try:
+        from app.core.config import get_settings
+        s = get_settings()
+        return {
+            "deepseek_api_key": s.DEEPSEEK_API_KEY,
+            "deepseek_base_url": s.DEEPSEEK_BASE_URL,
+            "deepseek_model": s.DEEPSEEK_MODEL,
+            "siliconflow_api_key": s.SILICONFLOW_API_KEY,
+            "siliconflow_image_model": s.SILICONFLOW_IMAGE_MODEL,
+            "image_width": int(s.CONCEPT_IMAGE_WIDTH),
+            "image_height": int(s.CONCEPT_IMAGE_HEIGHT),
+        }
+    except ImportError:
+        # CLI 模式回退（backend 包不在 sys.path）
+        return {
+            "deepseek_api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+            "deepseek_base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            "deepseek_model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            "siliconflow_api_key": os.getenv("SILICONFLOW_API_KEY", ""),
+            "siliconflow_image_model": os.getenv(
+                "SILICONFLOW_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell",
+            ),
+            "image_width": int(os.getenv("CONCEPT_IMAGE_WIDTH", "1024")),
+            "image_height": int(os.getenv("CONCEPT_IMAGE_HEIGHT", "576")),
+        }
+
+
+# ══════════════════════════════════════════════════════════
+# 文本引擎：DeepSeek Chat（惰性初始化单例）
+# ══════════════════════════════════════════════════════════
+
+_llm_instance = None
+
+
 def get_llm():
     """
     文本引擎：调用 DeepSeek 官方 API，用于分析报告大纲规划 + 章节撰写。
-    """
-    api_key = os.getenv("DEEPSEEK_API_KEY", "")
-    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
-    llm = ChatOpenAI(
+    惰性初始化 —— 首次调用时创建并缓存实例，避免模块 import 时的副作用。
+    """
+    global _llm_instance
+    if _llm_instance is not None:
+        return _llm_instance
+
+    cfg = _get_config()
+    api_key = cfg["deepseek_api_key"]
+    if not api_key:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY 未配置。请在 .env 文件中设置，"
+            "或通过环境变量 DEEPSEEK_API_KEY 提供。"
+        )
+
+    _llm_instance = ChatOpenAI(
         api_key=api_key,
-        base_url=base_url,
-        model=model_name,
+        base_url=cfg["deepseek_base_url"],
+        model=cfg["deepseek_model"],
         temperature=0.2,
     )
-    return llm
+    logger.info("DeepSeek LLM 客户端已初始化 (model=%s)", cfg["deepseek_model"])
+    return _llm_instance
 
 
 # ══════════════════════════════════════════════════════════
 # 图像引擎：硅基流动 (SiliconFlow) FLUX.1-schnell
-# 国内高性价比，出图快，原生支持 16:9 横版
 # ══════════════════════════════════════════════════════════
-SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
-SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-# 推荐模型: black-forest-labs/FLUX.1-schnell (速度优先, 性价比极高)
-# 备选: black-forest-labs/FLUX.1-pro (品质优先)
-SILICONFLOW_IMAGE_MODEL = os.getenv(
-    "SILICONFLOW_IMAGE_MODEL",
-    "black-forest-labs/FLUX.1-schnell"
-)
 
-# 横版 16:9 尺寸 (1024x576)
-IMAGE_WIDTH = int(os.getenv("CONCEPT_IMAGE_WIDTH", "1024"))
-IMAGE_HEIGHT = int(os.getenv("CONCEPT_IMAGE_HEIGHT", "576"))
+SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 
 
 def _wrap_prompt(raw_prompt: str) -> str:
@@ -72,13 +121,6 @@ def generate_image(
     """
     调用硅基流动 FLUX.1 模型生成 16:9 横版概念图。
 
-    🆕 增强韧性：
-    - 严密的 try-except 异常捕获，覆盖网络超时、JSON 解析失败、
-      图片下载中断、磁盘写入失败等所有已知故障模式
-    - 指数退避重试（2ⁿ 秒间隔）
-    - 超时保护（连接超时 + 读取超时双保险）
-    - 参数约束：强制 16:9 横版比例 (1024×576)
-
     Args:
         prompt:      图片主题描述（中文/英文均可，内部会包一层风格 Prompt）
         output_path: 图片保存路径 (e.g. outputs/images/xxx_concept.png)
@@ -88,50 +130,56 @@ def generate_image(
     Returns:
         bool: 生成成功返回 True，否则 False（调用方应使用 CSS 渐变兜底）
     """
-    if not SILICONFLOW_API_KEY:
-        print("[IMAGE WARN] 未设置 SILICONFLOW_API_KEY，跳过封面图生成 (报告将使用 CSS 渐变封面)")
+    cfg = _get_config()
+    api_key = cfg["siliconflow_api_key"]
+
+    if not api_key:
+        logger.warning(
+            "未设置 SILICONFLOW_API_KEY，跳过封面图生成（报告将使用 CSS 渐变封面）"
+        )
         return False
 
     full_prompt = _wrap_prompt(prompt)
+    image_width = cfg["image_width"]
+    image_height = cfg["image_height"]
 
-    # 🆕 强制约束 16:9 横版尺寸
     payload = {
-        "model": SILICONFLOW_IMAGE_MODEL,
+        "model": cfg["siliconflow_image_model"],
         "prompt": full_prompt,
         "n": 1,
-        "size": f"{IMAGE_WIDTH}x{IMAGE_HEIGHT}",         # 1024×576 (16:9)
+        "size": f"{image_width}x{image_height}",  # 16:9 横版
     }
 
     headers = {
-        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    for attempt in range(1, retries + 1 + 1):  # total = retries + 1 (initial)
-        try:
-            print(f"[IMAGE API] 调用硅基流动 {SILICONFLOW_IMAGE_MODEL} "
-                  f"({IMAGE_WIDTH}×{IMAGE_HEIGHT}, 16:9 横版) "
-                  f"第 {attempt}/{retries + 1} 次...")
+    url = f"{SILICONFLOW_BASE_URL}/images/generations"
 
-            # 🆕 双超时保护：连接超时 15s + 读取超时 = timeout
+    for attempt in range(1, retries + 2):  # total = retries + 1
+        try:
+            logger.info(
+                "调用硅基流动 %s (%d×%d, 16:9) 第 %d/%d 次...",
+                cfg["siliconflow_image_model"], image_width, image_height,
+                attempt, retries + 1,
+            )
+
             resp = requests.post(
-                f"{SILICONFLOW_BASE_URL}/images/generations",
-                json=payload,
-                headers=headers,
+                url, json=payload, headers=headers,
                 timeout=(15, timeout),  # (connect_timeout, read_timeout)
             )
 
             if resp.status_code == 200:
                 try:
                     data = resp.json()
-                except ValueError as e:
-                    print(f"[IMAGE ERR] JSON 解析响应失败: {e}")
+                except ValueError:
+                    logger.warning("JSON 解析响应失败")
                     if attempt <= retries:
                         time.sleep(3 * attempt)
                         continue
                     return False
 
-                # OpenAI 兼容格式: data[0].url 或 data[0].b64_json
                 image_url = None
                 if "data" in data and len(data["data"]) > 0:
                     item = data["data"][0]
@@ -140,22 +188,20 @@ def generate_image(
 
                     if image_url:
                         try:
-                            # 🆕 下载图片二进制（带超时保护）
                             img_resp = requests.get(image_url, timeout=(10, 60))
                             img_resp.raise_for_status()
                             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
                             with open(output_path, "wb") as f:
                                 f.write(img_resp.content)
                             file_size_kb = os.path.getsize(output_path) / 1024
-                            print(f"[IMAGE OK] 封面概念图已保存: {output_path} ({file_size_kb:.1f} KB)")
+                            logger.info("封面概念图已保存: %s (%.1f KB)", output_path, file_size_kb)
                             return True
                         except requests.exceptions.Timeout:
-                            print(f"[IMAGE ERR] 图片下载超时")
+                            logger.warning("图片下载超时")
                         except requests.exceptions.HTTPError as e:
-                            print(f"[IMAGE ERR] 图片下载 HTTP 错误: {e}")
+                            logger.warning("图片下载 HTTP 错误: %s", e)
                         except OSError as e:
-                            print(f"[IMAGE ERR] 写入图片文件失败: {e}")
-                        # 下载失败继续尝试重试
+                            logger.warning("写入图片文件失败: %s", e)
                         if attempt <= retries:
                             time.sleep(3 * attempt)
                             continue
@@ -167,55 +213,53 @@ def generate_image(
                             with open(output_path, "wb") as f:
                                 f.write(base64.b64decode(b64_data))
                             file_size_kb = os.path.getsize(output_path) / 1024
-                            print(f"[IMAGE OK] 封面概念图已保存 (b64): {output_path} ({file_size_kb:.1f} KB)")
+                            logger.info("封面概念图已保存 (b64): %s (%.1f KB)", output_path, file_size_kb)
                             return True
                         except (base64.binascii.Error, OSError) as e:
-                            print(f"[IMAGE ERR] Base64 解码 / 写文件失败: {e}")
+                            logger.warning("Base64 解码/写文件失败: %s", e)
                             if attempt <= retries:
                                 time.sleep(3 * attempt)
                                 continue
                             return False
 
-                print(f"[IMAGE WARN] 响应中未找到图片数据: {str(data)[:200]}")
+                logger.warning("响应中未找到图片数据: %s", str(data)[:200])
                 if attempt <= retries:
                     time.sleep(3)
                     continue
                 return False
 
             elif resp.status_code == 429:
-                # 🆕 指数退避：2s, 4s, 8s...
                 wait = 2 ** attempt
-                print(f"[IMAGE WARN] 速率限制 (429)，{wait}s 后重试...")
+                logger.warning("速率限制 (429)，%ds 后重试...", wait)
                 time.sleep(wait)
                 continue
             elif resp.status_code >= 500:
-                # 服务器错误，指数退避重试
                 wait = 3 * attempt
-                print(f"[IMAGE ERR] 服务器错误 {resp.status_code}: {resp.text[:200]}, {wait}s 后重试")
+                logger.error("服务器错误 %d: %s, %ds 后重试", resp.status_code, resp.text[:200], wait)
                 time.sleep(wait)
                 continue
             else:
-                print(f"[IMAGE ERR] API 返回 {resp.status_code}: {resp.text[:300]}")
+                logger.error("API 返回 %d: %s", resp.status_code, resp.text[:300])
                 if attempt <= retries:
                     time.sleep(3)
                 continue
 
         except requests.exceptions.Timeout:
-            print(f"[IMAGE ERR] 请求超时 (连接 15s + 读取 {timeout}s)")
+            logger.warning("请求超时 (连接 15s + 读取 %ds)", timeout)
             if attempt <= retries:
                 wait = 3 * attempt
-                print(f"[IMAGE RETRY] {wait}s 后重试...")
+                logger.info("%ds 后重试...", wait)
                 time.sleep(wait)
         except requests.exceptions.ConnectionError as e:
-            print(f"[IMAGE ERR] 连接错误: {e}")
+            logger.warning("连接错误: %s", e)
             if attempt <= retries:
                 wait = 5 * attempt
-                print(f"[IMAGE RETRY] {wait}s 后重试...")
+                logger.info("%ds 后重试...", wait)
                 time.sleep(wait)
         except Exception as e:
-            print(f"[IMAGE ERR] 未预期异常: {type(e).__name__}: {e}")
+            logger.warning("未预期异常: %s: %s", type(e).__name__, e)
             if attempt <= retries:
                 time.sleep(3 * attempt)
 
-    print(f"[IMAGE FAIL] 所有 {retries + 1} 次尝试均失败，将使用 CSS 渐变兜底封面")
+    logger.warning("所有 %d 次尝试均失败，将使用 CSS 渐变兜底封面", retries + 1)
     return False

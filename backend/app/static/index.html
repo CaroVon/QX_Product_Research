@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI 行业研究 Agent - Dashboard</title>
+<title>AI 产品分析 Agent - Dashboard</title>
 <style>
   /* ── Reset & Base ── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -212,7 +212,7 @@
 <!-- ===== Header ===== -->
 <header>
   <div class="container">
-    <h1>🔬 AI 行业研究 <span>Agent</span></h1>
+    <h1>🔬 AI 产品分析 <span>Agent</span></h1>
     <div class="badge">
       <span class="status-dot"></span>
       <span id="api-status">服务运行中</span>
@@ -225,10 +225,10 @@
 
   <!-- Create Form -->
   <div class="form-card">
-    <h2>📋 创建新的行业研究项目</h2>
+    <h2>📋 创建新的产品分析项目</h2>
     <div class="form-row">
-      <input type="text" id="topic-input" placeholder="输入研究主题，例如：AI眼镜行业、新能源汽车..." autocomplete="off">
-      <button id="create-btn" onclick="createProject()">🚀 开始研究</button>
+      <input type="text" id="topic-input" placeholder="输入分析主题，例如：智能手表产品分析、新能源汽车竞品对比..." autocomplete="off">
+      <button id="create-btn" onclick="createProject()">🚀 开始分析</button>
     </div>
     <div class="form-error" id="form-error"></div>
   </div>
@@ -245,7 +245,7 @@
   <div id="project-list" class="project-list">
     <div class="empty-state">
       <div class="icon">📭</div>
-      <p>暂无项目，输入主题开始研究</p>
+      <p>暂无项目，输入主题开始分析</p>
     </div>
   </div>
 
@@ -342,7 +342,7 @@ async function loadProjects() {
 function renderProjectList(projects) {
   const container = document.getElementById('project-list');
   if (!projects || projects.length === 0) {
-    container.innerHTML = `<div class="empty-state"><div class="icon">📭</div><p>暂无项目，输入主题开始研究</p></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="icon">📭</div><p>暂无项目，输入主题开始分析</p></div>`;
     return;
   }
   container.innerHTML = projects.map(p => {
@@ -380,7 +380,7 @@ async function createProject() {
   const topic = input.value.trim();
 
   if (!topic) {
-    errEl.textContent = '⚠️ 请输入研究主题';
+    errEl.textContent = '⚠️ 请输入分析主题';
     errEl.style.display = 'block'; return;
   }
   if (topic.length < 2) {
@@ -414,7 +414,7 @@ async function createProject() {
     showToast(`创建失败: ${e.message}`, 'error');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '🚀 开始研究';
+    btn.innerHTML = '🚀 开始分析';
   }
 }
 

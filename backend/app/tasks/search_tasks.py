@@ -54,26 +54,12 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
     """
     logger.info("[TASK] 开始数据采集 | project_id=%s", project_id)
 
-    # ─── 1. 从数据库获取主题 ──────────────────────────────────
-    import uuid as _uuid
-    from sqlalchemy import text
-    from app.core.celery_db import get_sync_engine
-
-    # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
-    project_id_hex = _uuid.UUID(project_id).hex
+    # ─── 1. 从 Repository 获取主题 ────────────────────────────
+    from app.repositories import ProjectRepo
+    repo = ProjectRepo()
+    topic = repo.get_project_topic(project_id)
 
     settings = self.settings
-    sync_engine = get_sync_engine()
-
-    with sync_engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT topic FROM projects WHERE id = :pid"),
-            {"pid": project_id_hex},
-        )
-        row = result.fetchone()
-        if row is None:
-            raise ValueError(f"项目不存在: {project_id}")
-        topic = row[0]
 
     logger.info("[TASK] 研究主题: %s", topic)
 
