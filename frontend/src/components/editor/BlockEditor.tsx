@@ -251,6 +251,10 @@ interface BlockEditorProps {
   onSectionTitleChange?: (title: string | null) => void
   /** 编辑器实例就绪回调 */
   onEditorReady?: (editor: Editor) => void
+  /** 引用 map 更新回调（供父组件接收完整引用映射） */
+  onCitationMapUpdate?: (map: Record<string, string>) => void
+  /** 引用角标点击回调（供父组件切换引用面板） */
+  onCitationClick?: (citationId: string) => void
 }
 
 /**
@@ -274,6 +278,8 @@ export function BlockEditor({
   activeSectionTitle,
   onSectionTitleChange,
   onEditorReady,
+  onCitationMapUpdate,
+  onCitationClick,
 }: BlockEditorProps) {
   // ─── 将 blocks 转换为 Markdown → HTML ────────────────────
   const editorContent = useMemo(() => {
@@ -302,6 +308,13 @@ export function BlockEditor({
   const editorRef = useRef<HTMLDivElement>(null)
   const { setActiveCitationId } = useCitationStore()
 
+  // ─── 引用 map 更新通知父组件 ─────────────────────────────
+  useEffect(() => {
+    if (onCitationMapUpdate) {
+      onCitationMapUpdate(globalCitationMap)
+    }
+  }, [globalCitationMap, onCitationMapUpdate])
+
   // ─── 创建编辑器实例 ──────────────────────────────────────
   const editor = useEditor({
     ...DEFAULT_EDITOR_CONFIG,
@@ -321,7 +334,10 @@ export function BlockEditor({
             { url: v, title: `引用 [^${k}]` },
           ]),
         ),
-        onCitationClick: (citationId: string) => setActiveCitationId(citationId),
+        onCitationClick: (citationId: string) => {
+          setActiveCitationId(citationId)
+          onCitationClick?.(citationId)
+        },
       }),
     ],
     editable: !readOnly,

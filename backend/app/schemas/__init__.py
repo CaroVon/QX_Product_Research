@@ -10,9 +10,32 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ConfigDict
+
+
+# ════════════════════════════════════════════════════════════════
+# 枚举字面量 —— 编译期契约，与 models/task.py 的 TaskType/TaskStatus
+# 以及前端 types/api.ts 的 TaskTypeEnum/TaskStatusEnum 保持一致
+# ════════════════════════════════════════════════════════════════
+
+TaskTypeLiteral = Literal[
+    "search",
+    "build_knowledge_base",
+    "generate_outline",
+    "write_section",
+    "build_report",
+    "generate_pdf",
+    "image_generation",
+]
+
+TaskStatusLiteral = Literal[
+    "pending",
+    "processing",
+    "completed",
+    "failed",
+]
 
 
 # ================================================================
@@ -159,8 +182,8 @@ class OutlineApproveResponse(BaseModel):
 class TaskResponse(BaseModel):
     """单个任务步骤的响应"""
     id: uuid.UUID = Field(..., description="任务 UUID")
-    task_type: str = Field(..., description="任务类型")
-    status: str = Field(..., description="任务状态")
+    task_type: TaskTypeLiteral = Field(..., description="任务类型")
+    status: TaskStatusLiteral = Field(..., description="任务状态")
     sequence_order: int = Field(..., description="执行顺序")
     section_title: str | None = Field(None, description="关联章节标题")
     retry_count: int = Field(0, description="已重试次数")
@@ -178,6 +201,7 @@ class ProjectStatusResponse(BaseModel):
     topic: str = Field(..., description="分析主题")
     project_status: str = Field(..., description="项目整体状态")
     outline_content: str | None = Field(None, description="暂存大纲内容（WAITING_OUTLINE_APPROVAL 时有值）")
+    pdf_path: str | None = Field(None, description="PDF 文件相对路径（完成后有值）")
     current_step: dict[str, Any] | None = Field(
         None,
         description="🆕 当前执行步骤（step/message/icon/level），从前端实时日志时间轴推导",

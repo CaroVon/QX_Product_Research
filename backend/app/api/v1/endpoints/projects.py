@@ -230,6 +230,7 @@ async def get_project_status(
         topic=project.topic,
         project_status=project.status,
         outline_content=project.outline_content,
+        pdf_path=project.pdf_path,
         progress=progress,
         current_step=current_step,
         tasks=[TaskResponse.model_validate(orm_to_dict(t)) for t in tasks],
@@ -506,23 +507,11 @@ async def approve_outline(
 
 def _extract_sections_from_outline(outline: str) -> list[str]:
     """
-    从大纲 Markdown 中提取所有 ## 开头的二级标题作为章节名。
-    示例输入：
-        # AI眼镜行业
-        ## 1. 行业概述
-        ## 2. 市场规模
-    返回：["1. 行业概述", "2. 市场规模"]
+    从大纲 Markdown 中提取所有 ## 二级标题作为章节名。
+    委托给共享模块 app.shared.outline_parser.extract_sections 的唯一实现。
     """
-    import re
-    lines = outline.split("\n")
-    sections = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("## ") or stripped.startswith("##\t"):
-            title = re.sub(r"^##\s+", "", stripped)
-            if title:
-                sections.append(title)
-    return sections
+    from app.shared.outline_parser import extract_sections
+    return extract_sections(outline)
 
 
 # ================================================================

@@ -30,7 +30,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import type { Editor } from '@tiptap/react'
-import { ArrowLeft, Loader2, AlertCircle, Search, FileText, BookOpen, Quote, Bot, Terminal } from 'lucide-react'
+import { ArrowLeft, Loader2, AlertCircle, Search, FileText, Download, Quote, Bot, Terminal, Send, ExternalLink } from 'lucide-react'
 import { Button } from '@/components/common/button'
 import { ProgressTracker } from '@/components/projects/ProgressTracker'
 import { SourcesReview } from '@/components/projects/SourcesReview'
@@ -51,6 +51,7 @@ import { useDraftStream } from '@/hooks/useDraftStream'
 import { useCitationStore } from '@/hooks/useCitationStore'
 import { useProjectLogs } from '@/hooks/useProjectLogs'
 import { TerminalTimeline } from '@/components/projects/TerminalTimeline'
+import { editorApi } from '@/lib/api'
 import type { OutlineSection, RightPanelView } from '@/types/index'
 
 // ================================================================
@@ -126,42 +127,189 @@ interface RightPanelProps {
   onClose: () => void
 }
 
-function CitationsPanel() {
+interface CitationsPanelProps {
+  citationMap: Record<string, string>
+}
+
+function CitationsPanel({ citationMap }: CitationsPanelProps) {
   const activeCitationId = useCitationStore((s) => s.activeCitationId)
+  const url = activeCitationId ? citationMap[activeCitationId] : null
 
   return (
     <div className="p-4">
-      <h3 className="text-sm font-medium">引用溯源</h3>
+      <h3 className="mb-3 text-sm font-semibold">引用溯源</h3>
 
       {activeCitationId ? (
-        <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/50 p-3">
-          <p className="text-xs font-medium text-violet-700">
-            引用 [^{activeCitationId}]
-          </p>
-          <p className="mt-1 text-[11px] text-violet-600/70">
-            来源 URL 待后端返回
-          </p>
-          {/* TODO: 从 globalCitationMap 中查找对应 URL 展示 */}
+        <div className="rounded-lg border border-violet-100 bg-violet-50/50 p-3">
+          <p className="text-xs font-semibold text-violet-700">引用 [^{activeCitationId}]</p>
+          {url ? (
+            <>
+              <p className="mt-1.5 break-all text-[11px] text-violet-600/80">{url}</p>
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-flex items-center gap-1 rounded bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-200 transition-colors"
+              >
+                <ExternalLink className="h-3 w-3" />
+                打开原文
+              </a>
+            </>
+          ) : (
+            <p className="mt-1 text-[11px] text-violet-600/60">（未找到该引用的来源链接）</p>
+          )}
         </div>
       ) : (
-        <p className="mt-2 text-xs text-muted-foreground">
-          点击编辑器中的引用角标可查看来源详情。
-        </p>
+        <div className="rounded-lg border border-dashed border-border bg-muted/20 p-4 text-center">
+          <Quote className="mx-auto mb-2 h-5 w-5 text-muted-foreground/50" />
+          <p className="text-xs text-muted-foreground">点击报告中的引用角标，此处将展示对应的来源链接。</p>
+        </div>
+      )}
+
+      {/* 引用列表 */}
+      {Object.keys(citationMap).length > 0 && (
+        <div className="mt-4">
+          <p className="mb-2 text-xs font-medium text-muted-foreground">所有引用来源</p>
+          <div className="space-y-1.5">
+            {Object.entries(citationMap).map(([id, href]) => (
+              <div key={id} className="flex items-start gap-2 rounded p-1.5 hover:bg-muted/50">
+                <span className="mt-0.5 shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] font-mono font-medium text-muted-foreground">
+                  [{id}]
+                </span>
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="line-clamp-2 text-[11px] text-blue-600 hover:underline"
+                >
+                  {href}
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
-function AgentChatPanel() {
+interface AgentChatPanelProps {
+  activeSectionTitle: string | null
+}
+
+function AgentChatPanel({ activeSectionTitle }: AgentChatPanelProps) {
+  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  const handleSend = useCallback(async () => {
+    const trimmed = input.trim()
+    if (!trimmed || loading) return
+
+    const userMsg = { role: 'user' as const, text: trimmed }
+    setMessages((prev) => [...prev, userMsg])
+    setInput('')
+    setLoading(true)
+
+    try {
+      // 使用报告章节名作为上下文，指令是用户输入
+      const placeholder = activeSectionTitle
+        ? `当前正在编辑章节「${activeSectionTitle}」的产品分析报告，请根据指令提供改写建议：`
+        : `这是一份产品分析报告，请根据指令提供改写建议：`
+      const res = await editorApi.revise({
+        selected_text: placeholder,
+        instruction: trimmed,
+      })
+      setMessages((prev) => [...prev, { role: 'assistant', text: res.revised_text }])
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', text: '⚠️ 请求失败，请检查网络或 API 配置。' },
+      ])
+    } finally {
+      setLoading(false)
+    }
+  }, [input, loading, activeSectionTitle])
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        handleSend()
+      }
+    },
+    [handleSend],
+  )
+
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border px-4 py-3">
-        <h3 className="text-sm font-medium">AI 助手</h3>
+      {/* 消息列表 */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <Bot className="mb-2 h-8 w-8 text-muted-foreground/40" />
+            <p className="text-xs text-muted-foreground">向 AI 发送指令，辅助润色或扩写当前章节内容。</p>
+            {activeSectionTitle && (
+              <p className="mt-1 text-[11px] text-muted-foreground/60">当前章节：{activeSectionTitle}</p>
+            )}
+          </div>
+        ) : (
+          messages.map((msg, i) => (
+            <div
+              key={i}
+              className={cn(
+                'rounded-lg px-3 py-2 text-xs leading-relaxed',
+                msg.role === 'user'
+                  ? 'ml-6 bg-primary/10 text-foreground'
+                  : 'mr-6 bg-muted text-foreground',
+              )}
+            >
+              <p className="mb-1 text-[10px] font-medium text-muted-foreground">
+                {msg.role === 'user' ? '你' : 'AI 助手'}
+              </p>
+              <p className="whitespace-pre-wrap">{msg.text}</p>
+            </div>
+          ))
+        )}
+        {loading && (
+          <div className="mr-6 rounded-lg bg-muted px-3 py-2">
+            <p className="text-[10px] font-medium text-muted-foreground mb-1">AI 助手</p>
+            <div className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/50 [animation-delay:0ms]" />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/50 [animation-delay:150ms]" />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/50 [animation-delay:300ms]" />
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
       </div>
-      <div className="flex-1 p-4">
-        <p className="text-xs text-muted-foreground">
-          TODO: 与 AI Agent 对话，修改大纲或调整内容。
-        </p>
+
+      {/* 输入框 */}
+      <div className="border-t border-border p-3">
+        <div className="flex items-end gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={activeSectionTitle ? `针对「${activeSectionTitle}」提出修改意见...` : '输入改写指令（Enter 发送）'}
+            disabled={loading}
+            rows={2}
+            className="flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={loading || !input.trim()}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+          >
+            <Send className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -169,21 +317,30 @@ function AgentChatPanel() {
 
 function RightPanel({
   view,
-  onClose,
+  onViewChange,
   logs = [],
   logsLoading = false,
-}: RightPanelProps & { logs?: import('@/types/api').ProjectLogResponse[]; logsLoading?: boolean }) {
+  citationMap = {},
+  activeSectionTitle = null,
+}: {
+  view: RightPanelView
+  onViewChange: (v: RightPanelView) => void
+  logs?: import('@/types/api').ProjectLogResponse[]
+  logsLoading?: boolean
+  citationMap?: Record<string, string>
+  activeSectionTitle?: string | null
+}) {
   return (
     <div className="flex h-full flex-col">
       {/* ─── 面板切换标签 ─────────────────────────────────────── */}
       <div className="flex items-center border-b border-border">
         <button
           type="button"
-          onClick={() => {}}
+          onClick={() => onViewChange('logs')}
           className={cn(
             'flex flex-1 items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors',
             view === 'logs'
-              ? 'border-b-2 border-emerald-500 text-emerald-500'
+              ? 'border-b-2 border-emerald-500 text-emerald-600'
               : 'text-muted-foreground hover:text-foreground',
           )}
         >
@@ -192,11 +349,11 @@ function RightPanel({
         </button>
         <button
           type="button"
-          onClick={() => {}}
+          onClick={() => onViewChange('citations')}
           className={cn(
             'flex flex-1 items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors',
             view === 'citations'
-              ? 'border-b-2 border-primary text-primary'
+              ? 'border-b-2 border-violet-500 text-violet-600'
               : 'text-muted-foreground hover:text-foreground',
           )}
         >
@@ -205,7 +362,7 @@ function RightPanel({
         </button>
         <button
           type="button"
-          onClick={() => {}}
+          onClick={() => onViewChange('agent-chat')}
           className={cn(
             'flex flex-1 items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors',
             view === 'agent-chat'
@@ -221,10 +378,16 @@ function RightPanel({
       {/* ─── 面板内容 ─────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden">
         {view === 'logs' && (
-          <TerminalTimeline logs={logs} isLoading={logsLoading} />
+          <div className="h-full bg-slate-900">
+            <TerminalTimeline logs={logs} isLoading={logsLoading} />
+          </div>
         )}
-        {view === 'citations' && <CitationsPanel />}
-        {view === 'agent-chat' && <AgentChatPanel />}
+        {view === 'citations' && (
+          <div className="h-full overflow-y-auto">
+            <CitationsPanel citationMap={citationMap} />
+          </div>
+        )}
+        {view === 'agent-chat' && <AgentChatPanel activeSectionTitle={activeSectionTitle} />}
       </div>
     </div>
   )
@@ -237,6 +400,8 @@ function RightPanel({
 export function WorkspacePage() {
   const { projectId } = useParams<{ projectId: string }>()
   const [activeSectionTitle, setActiveSectionTitle] = useState<string | null>(null)
+  const [rightPanelView, setRightPanelView] = useState<RightPanelView>('logs')
+  const [citationMap, setCitationMap] = useState<Record<string, string>>({})
 
   // ─── 状态轮询 ──────────────────────────────────────────────
   const {
@@ -320,6 +485,13 @@ export function WorkspacePage() {
   const handleEditorReady = useCallback((editor: Editor) => {
     editorRef.current = editor
   }, [])
+
+  // ─── 引用点击：自动切换到引用面板 ────────────────────────
+  const { setActiveCitationId } = useCitationStore()
+  const handleCitationClick = useCallback((id: string) => {
+    setActiveCitationId(id)
+    setRightPanelView('citations')
+  }, [setActiveCitationId])
 
   // ─── 🌊 SSE 流式渲染 ──────────────────────────────────────
   useDraftStream({
@@ -424,27 +596,39 @@ export function WorkspacePage() {
 
             <h1 className="truncate text-sm font-medium">{topic}</h1>
 
-            {/* 状态指示器 */}
-            <span
-              className={cn(
-                'ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium',
-                flags.isCompleted && 'bg-emerald-50 text-emerald-600',
-                flags.isFailed && 'bg-red-50 text-red-600',
-                flags.isPreparing && 'bg-blue-50 text-blue-600',
-                flags.isWaitingSources && 'bg-blue-50 text-blue-600',
-                flags.isPreparingOutline && 'bg-blue-50 text-blue-600',
-                flags.isWaitingApproval && 'bg-amber-50 text-amber-600',
-                flags.isDrafting && 'bg-violet-50 text-violet-600',
+            {/* 状态指示器 + 下载按钮 */}
+            <div className="ml-auto flex items-center gap-2">
+              <span
+                className={cn(
+                  'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium',
+                  flags.isCompleted && 'bg-emerald-50 text-emerald-600',
+                  flags.isFailed && 'bg-red-50 text-red-600',
+                  flags.isPreparing && 'bg-blue-50 text-blue-600',
+                  flags.isWaitingSources && 'bg-blue-50 text-blue-600',
+                  flags.isPreparingOutline && 'bg-blue-50 text-blue-600',
+                  flags.isWaitingApproval && 'bg-amber-50 text-amber-600',
+                  flags.isDrafting && 'bg-violet-50 text-violet-600',
+                )}
+              >
+                {flags.isCompleted && '已完成'}
+                {flags.isFailed && '失败'}
+                {flags.isPreparing && '资料搜索中'}
+                {flags.isWaitingSources && '待审核资料'}
+                {flags.isPreparingOutline && '大纲生成中'}
+                {flags.isWaitingApproval && '待确认大纲'}
+                {flags.isDrafting && 'AI 撰写中'}
+              </span>
+              {flags.isCompleted && statusData.pdf_path && (
+                <a
+                  href={`/api/v1/files/${statusData.pdf_path}`}
+                  download
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 transition-colors"
+                >
+                  <Download className="h-3 w-3" />
+                  下载 PDF
+                </a>
               )}
-            >
-              {flags.isCompleted && '已完成'}
-              {flags.isFailed && '失败'}
-              {flags.isPreparing && '资料搜索中'}
-              {flags.isWaitingSources && '待审核资料'}
-              {flags.isPreparingOutline && '大纲生成中'}
-              {flags.isWaitingApproval && '待确认大纲'}
-              {flags.isDrafting && 'AI 撰写中'}
-            </span>
+            </div>
           </div>
 
           {/* ─── ProgressTracker ───────────────────────────── */}
@@ -523,6 +707,8 @@ export function WorkspacePage() {
                 activeSectionTitle={activeSectionTitle}
                 onSectionTitleChange={setActiveSectionTitle}
                 onEditorReady={handleEditorReady}
+                onCitationMapUpdate={setCitationMap}
+                onCitationClick={handleCitationClick}
               />
             </div>
           )}
@@ -549,12 +735,12 @@ export function WorkspacePage() {
       // ── 右栏：日志/引用/对话 ─────────────────────────
       rightPane={
         <RightPanel
-          view={
-            flags.isActive && !flags.isCompleted ? 'logs' : 'citations'
-          }
-          onClose={() => {}}
+          view={rightPanelView}
+          onViewChange={setRightPanelView}
           logs={logs}
           logsLoading={logsLoading}
+          citationMap={citationMap}
+          activeSectionTitle={activeSectionTitle}
         />
       }
     />

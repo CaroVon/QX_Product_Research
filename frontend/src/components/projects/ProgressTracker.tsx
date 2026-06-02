@@ -14,7 +14,7 @@ interface ProgressStep {
 
 const PROGRESS_STEPS: ProgressStep[] = [
   { type: 'search', label: '搜集资料', icon: '🔍' },
-  { type: 'build_kb', label: '知识库构建', icon: '📚' },
+  { type: 'build_knowledge_base', label: '知识库构建', icon: '📚' },
   { type: 'generate_outline', label: '规划大纲', icon: '📋' },
   { type: 'write_section', label: 'AI 撰写中', icon: '✍️' },
   { type: 'build_report', label: '报告排版', icon: '📄' },
@@ -110,7 +110,7 @@ export function ProgressTracker({ tasks, percentage, projectStatus, currentStep 
             const isActive = status === 'processing'
             const isDone = status === 'completed'
             const isError = status === 'failed'
-            const isPending = status === 'pending' || status === 'cancelled'
+            const isPending = status === 'pending'
 
             return (
               <div

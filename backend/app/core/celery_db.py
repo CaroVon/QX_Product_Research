@@ -49,12 +49,23 @@ if sys.platform == "win32" and sys.version_info < (3, 14):
 
 # ─── 为 Celery Worker 创建独立的异步引擎 ──────────────────────
 settings = get_settings()
-celery_engine = create_async_engine(
-    settings.DATABASE_URL_ASYNC,
-    pool_size=5,
-    max_overflow=10,
-    pool_pre_ping=True,
-)
+_celery_is_sqlite = "sqlite" in settings.DATABASE_URL_ASYNC
+
+if _celery_is_sqlite:
+    from sqlalchemy.pool import NullPool as _NullPool
+    celery_engine = create_async_engine(
+        settings.DATABASE_URL_ASYNC,
+        connect_args={"check_same_thread": False},
+        poolclass=_NullPool,
+    )
+else:
+    celery_engine = create_async_engine(
+        settings.DATABASE_URL_ASYNC,
+        pool_size=5,
+        max_overflow=10,
+        pool_pre_ping=True,
+    )
+
 CeleryAsyncSession = async_sessionmaker(
     celery_engine,
     class_=AsyncSession,
@@ -65,10 +76,11 @@ CeleryAsyncSession = async_sessionmaker(
 @event.listens_for(celery_engine.sync_engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
     """SQLite 连接时自动启用 WAL 模式和 foreign key 约束"""
-    if "sqlite" in str(settings.DATABASE_URL_ASYNC):
+    if _celery_is_sqlite:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.close()
 
 

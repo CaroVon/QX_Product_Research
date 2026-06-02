@@ -61,16 +61,22 @@ async def lifespan(app: FastAPI):
     logger.info("  Debug 模式: %s", settings.DEBUG)
     logger.info("=" * 60)
 
+    # 配置校验（fail-fast：在启动阶段曝光所有缺失的关键配置）
+    try:
+        settings.validate_critical_config()  # type: ignore[attr-defined]
+        logger.info("✅ 关键 API Key 配置校验通过: DEEPSEEK=✓ TAVILY=✓ FIRECRAWL=✓")
+    except ValueError as e:
+        logger.critical("❌ 配置校验失败，应用无法启动:\n%s", e)
+        raise
+
     # 创建输出目录（如果不存在）
     os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
 
-    # TODO: 生产环境应使用 Alembic 迁移，而非自动建表
-    # 此处仅为开发/演示方便
+    # 自动创建数据库表（create_all 是幂等的，不会删除已有数据）
+    # 生产环境如需精细迁移控制，可切换为 Alembic migrate
     async with engine.begin() as conn:
-        # 仅在 DEBUG 模式下自动创建表（避免生产环境误操作）
-        if settings.DEBUG:
-            await conn.run_sync(Base.metadata.create_all)
-            logger.info("[DB] 数据库表已自动创建（DEBUG 模式）")
+        await conn.run_sync(Base.metadata.create_all)
+        logger.info("[DB] 数据库表已就绪（create_all 幂等操作）")
 
     yield  # 应用运行中...
 

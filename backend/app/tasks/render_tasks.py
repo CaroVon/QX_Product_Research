@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from celery import Task
 
@@ -56,25 +56,10 @@ def build_report_markdown(
     logger.info("[TASK] 组装 Markdown 报告 | project_id=%s", project_id)
     settings = self.settings
 
-    # ─── 1. 从数据库获取 topic ────────────────────────────────
-    import uuid as _uuid
-    from sqlalchemy import text
-    from app.core.celery_db import get_sync_engine
-
-    # SQLite 中 UUID 存储为无连字符的 32 位 hex 格式
-    project_id_hex = _uuid.UUID(project_id).hex
-
-    engine = get_sync_engine()
-
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT topic FROM projects WHERE id = :pid"),
-            {"pid": project_id_hex},
-        )
-        row = result.fetchone()
-        if row is None:
-            raise ValueError(f"项目不存在: {project_id}")
-        topic = row[0]
+    # ─── 1. 从 Repository 获取 topic ────────────────────────────
+    from app.repositories import ProjectRepo
+    repo = ProjectRepo()
+    topic = repo.get_project_topic(project_id)
 
     # ─── 2. 组装完整的 Markdown ───────────────────────────────
     report = f"# {topic}\n\n"
@@ -88,7 +73,7 @@ def build_report_markdown(
 
     # 文件名：topic_日期时间.md
     safe_topic = re.sub(r'[\\/:*?"<>|]', '_', topic)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = f"{safe_topic}_report_{timestamp}.md"
     relative_path = filename  # 相对 OUTPUT_DIR 的路径
     full_path = os.path.join(output_dir, filename)
@@ -138,19 +123,12 @@ def generate_pdf_report(
     if not os.path.exists(md_full_path):
         raise FileNotFoundError(f"Markdown 文件未找到: {md_full_path}")
 
-    # ─── 从数据库获取 topic（用于封面图生成 Prompt）────────
-    import uuid as _uuid
-    from sqlalchemy import text
-    from app.core.celery_db import get_sync_engine
-
-    project_id_hex = _uuid.UUID(project_id).hex
-    engine = get_sync_engine()
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT topic FROM projects WHERE id = :pid"),
-            {"pid": project_id_hex},
-        ).fetchone()
-        topic = row[0] if row else "产品深度研究"
+    # ─── 从 Repository 获取 topic（用于封面图生成 Prompt）────
+    from app.repositories import ProjectRepo
+    try:
+        topic = ProjectRepo().get_project_topic(project_id)
+    except Exception:
+        topic = "产品深度研究"
 
     # ─── 生成 PDF 文件名 ─────────────────────────────────────
     pdf_filename = md_relative_path.replace(".md", ".pdf")

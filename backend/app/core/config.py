@@ -2,6 +2,10 @@
 ============================================================
 企业级应用核心配置 —— 基于 Pydantic V2 Settings
 支持环境变量覆盖，便于 Docker 部署
+
+.env 文件搜索顺序：
+  1. ./backend/.env（从项目根目录运行时）
+  2. ./.env（从 backend/ 目录运行时）
 ============================================================
 """
 
@@ -12,7 +16,20 @@ from pathlib import Path
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
-from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic import Field, PostgresDsn, RedisDsn, model_validator
+
+# ─── 查找 .env 文件路径 ──────────────────────────────────────
+def _find_env_file() -> str:
+    """按优先级查找 .env 文件，返回第一个存在的路径。"""
+    candidates = [
+        Path(__file__).parent.parent.parent / ".env",       # backend/.env（从项目根运行）
+        Path(__file__).parent.parent.parent.parent / "backend" / ".env",  # 额外兜底
+        Path(".env"),                                         # 当前工作目录
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return ".env"  # 默认，pydantic-settings 会静默忽略不存在的文件
 
 
 class Settings(BaseSettings):
@@ -98,7 +115,37 @@ class Settings(BaseSettings):
     # ─── Embedding 模型路径 ──────────────────────────────────────
     EMBEDDING_MODEL_PATH: str = Field(default="BAAI/bge-small-zh-v1.5")
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # ─── 启动时关键配置校验（fail-fast：不要在深度执行时才报错） ───
+    @model_validator(mode="after")
+    def validate_critical_config(self):
+        """
+        启动时即校验关键 API Key，失败直接报错抛出明确指引，
+        避免用户等待数分钟后在「大纲生成」步骤才看到 401 错误。
+
+        SILICONFLOW_API_KEY 可选——未配置时封面图使用 CSS 渐变兜底。
+        """
+        missing: list[str] = []
+        if not self.DEEPSEEK_API_KEY:
+            missing.append("DEEPSEEK_API_KEY（LLM 文本引擎）")
+        if not self.TAVILY_API_KEY:
+            missing.append("TAVILY_API_KEY（全网搜索）")
+        if not self.FIRECRAWL_API_KEY:
+            missing.append("FIRECRAWL_API_KEY（网页内容抓取）")
+
+        if missing:
+            bullet = "\n  • ".join(missing)
+            raise ValueError(
+                f"❌ 关键 API Key 未配置，应用无法启动：\n"
+                f"  • {bullet}\n\n"
+                f"请在项目根目录的 .env 文件中设置这些环境变量：\n"
+                f"  DEEPSEEK_API_KEY=sk-xxxx...\n"
+                f"  TAVILY_API_KEY=tvly-xxxx...\n"
+                f"  FIRECRAWL_API_KEY=fc-xxxx...\n\n"
+                f"可参考 backend/.env.example 中的模板。"
+            )
+        return self
+
+    model_config = {"env_file": _find_env_file(), "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 @lru_cache()

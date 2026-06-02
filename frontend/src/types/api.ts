@@ -116,22 +116,24 @@ export interface TaskResponse {
   created_at: string
 }
 
+/**
+ * TaskType 枚举 —— 必须与 backend/app/models/task.py 的 TaskType 值严格一致。
+ * 后端为 source of truth；若新增枚举值需两边同步更新。
+ */
 export type TaskTypeEnum =
   | 'search'
-  | 'build_kb'
+  | 'build_knowledge_base'
   | 'generate_outline'
   | 'write_section'
-  | 'generate_image'
   | 'build_report'
   | 'generate_pdf'
+  | 'image_generation'
 
 export type TaskStatusEnum =
   | 'pending'
   | 'processing'
   | 'completed'
   | 'failed'
-  | 'retrying'
-  | 'cancelled'
 
 export interface ProgressInfo {
   total_tasks: number
@@ -152,6 +154,7 @@ export interface ProjectStatusResponse {
   topic: string
   project_status: ProjectStatusEnum
   outline_content: string | null
+  pdf_path: string | null
   current_step: CurrentStep | null
   progress: ProgressInfo
   tasks: TaskResponse[]
@@ -273,10 +276,10 @@ export interface SectionWithCitations {
  */
 export const TASK_STEP_LABELS: Record<TaskTypeEnum, string> = {
   search: '数据采集',
-  build_kb: '构建知识库',
+  build_knowledge_base: '构建知识库',
   generate_outline: '规划大纲',
   write_section: 'AI 撰写中',
-  generate_image: '生成图表',
+  image_generation: '生成图表',
   build_report: '报告排版',
   generate_pdf: 'PDF 渲染',
 }
@@ -298,7 +301,7 @@ export const STATE_MACHINE_STEPS = [
  */
 export const PROGRESS_STEPS = [
   { type: 'search' as TaskTypeEnum, label: '搜集资料', icon: '🔍' },
-  { type: 'build_kb' as TaskTypeEnum, label: '知识库', icon: '📚' },
+  { type: 'build_knowledge_base' as TaskTypeEnum, label: '知识库', icon: '📚' },
   { type: 'generate_outline' as TaskTypeEnum, label: '规划大纲', icon: '📋' },
   { type: 'write_section' as TaskTypeEnum, label: 'AI 撰写', icon: '✍️' },
   { type: 'build_report' as TaskTypeEnum, label: '报告排版', icon: '📄' },

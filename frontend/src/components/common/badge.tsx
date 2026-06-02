@@ -29,16 +29,20 @@ export function Badge({ className, variant = 'default', ...props }: BadgeProps) 
 /** 项目状态对应的 Badge 变体 */
 const projectBadgeVariant: Record<ProjectStatusEnum, BadgeProps['variant']> = {
   preparing_data: 'default',
-  waiting_outline_approval: 'warning',
+  waiting_for_sources: 'warning',
+  preparing_outline: 'default',
+  waiting_for_outline: 'warning',
   drafting: 'default',
   completed: 'success',
   failed: 'destructive',
 }
 
 const projectBadgeLabel: Record<ProjectStatusEnum, string> = {
-  preparing_data: '资料准备中',
-  waiting_outline_approval: '待确认大纲',
-  drafting: '撰写中',
+  preparing_data: '资料搜索中',
+  waiting_for_sources: '待审核资料',
+  preparing_outline: '大纲生成中',
+  waiting_for_outline: '待确认大纲',
+  drafting: 'AI 撰写中',
   completed: '已完成',
   failed: '失败',
 }
@@ -57,8 +61,6 @@ const taskBadgeVariant: Record<TaskStatusEnum, BadgeProps['variant']> = {
   processing: 'default',
   completed: 'success',
   failed: 'destructive',
-  retrying: 'warning',
-  cancelled: 'outline',
 }
 
 const taskBadgeLabel: Record<TaskStatusEnum, string> = {
@@ -66,8 +68,6 @@ const taskBadgeLabel: Record<TaskStatusEnum, string> = {
   processing: '执行中',
   completed: '已完成',
   failed: '失败',
-  retrying: '重试中',
-  cancelled: '已取消',
 }
 
 export function TaskStatusBadge({ status }: { status: TaskStatusEnum }) {
