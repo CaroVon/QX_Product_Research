@@ -52,3 +52,26 @@ agent_py310_backup/
 
 # cache
 .cache/
+
+# Node.js / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Generated outputs (PDFs, reports, images)
+backend/outputs/
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage
+.coverage
+htmlcov/
+
+# WAL files (SQLite)
+*.db-shm
+*.db-wal
+
+# Test databases
+test_*.db
