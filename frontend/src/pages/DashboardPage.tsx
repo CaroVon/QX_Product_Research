@@ -9,7 +9,7 @@ import { useProjectList } from '@/hooks/useProjects'
  * 控制台页面（任务 2）
  *
  * 左侧边栏导航 + 主视图展示历史项目卡片列表。
- * 提供一个突出的"新建行研"按钮。
+ * 提供一个突出的"新建分析"按钮。
  */
 export function DashboardPage() {
   const [modalOpen, setModalOpen] = useState(false)
@@ -22,7 +22,7 @@ export function DashboardPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">控制台</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            管理您的行业研究项目，创建新的研报或查看已有成果。
+            管理您的产品分析项目，创建新的分析报告或查看已有成果。
           </p>
         </div>
         <Button
@@ -31,7 +31,7 @@ export function DashboardPage() {
           className="gap-2"
         >
           <Plus className="h-4 w-4" />
-          新建行研
+          新建分析
         </Button>
       </div>
 
@@ -66,16 +66,16 @@ export function DashboardPage() {
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-secondary">
             <FileText className="h-8 w-8 text-muted-foreground" />
           </div>
-          <h3 className="mt-4 text-lg font-semibold">暂无研究项目</h3>
+          <h3 className="mt-4 text-lg font-semibold">暂无分析项目</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            点击"新建行研"按钮，开始您的第一份行业研究报告。
+            点击"新建分析"按钮，开始您的第一份产品分析报告。
           </p>
           <Button
             className="mt-6 gap-2"
             onClick={() => setModalOpen(true)}
           >
             <Plus className="h-4 w-4" />
-            新建行研
+            新建分析
           </Button>
         </div>
       )}

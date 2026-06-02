@@ -24,7 +24,7 @@ export function Sidebar() {
             Research Agent
           </span>
           <span className="text-[10px] text-muted-foreground/60">
-            行业研究生成平台
+            产品分析生成平台
           </span>
         </div>
       </div>

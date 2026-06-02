@@ -51,8 +51,12 @@ export function ProgressPage() {
 
   const isCompleted = data.project_status === 'completed'
   const isFailed = data.project_status === 'failed'
-  // processing 阶段已拆分为 preparing_data / waiting_outline_approval / drafting
-  const isProcessing = data.project_status === 'preparing_data' || data.project_status === 'drafting'
+  // 所有非终态且非交互等待的状态
+  const isProcessing = data.project_status === 'preparing_data'
+    || data.project_status === 'preparing_outline'
+    || data.project_status === 'drafting'
+  const isWaitingInteraction = data.project_status === 'waiting_for_sources'
+    || data.project_status === 'waiting_for_outline'
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">
@@ -94,7 +98,7 @@ export function ProgressPage() {
           <div className="text-center">
             <h3 className="font-semibold text-emerald-700">报告已生成完毕</h3>
             <p className="mt-1 text-sm text-emerald-600/70">
-              您可以查看完整的行业研究报告。
+              您可以查看完整的产品分析报告。
             </p>
           </div>
           <Link to={`/projects/${data.project_id}/workspace`}>
@@ -135,7 +139,7 @@ export function ProgressPage() {
       )}
 
       {/* ─── 任务详情（调试用） ───────────────────────────────── */}
-      {isProcessing && data.tasks.length > 0 && (
+      {(isProcessing || isWaitingInteraction) && data.tasks.length > 0 && (
         <details className="group rounded-lg border p-4">
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground group-open:text-foreground">
             查看任务详情

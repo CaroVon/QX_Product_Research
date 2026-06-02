@@ -34,10 +34,11 @@ export function useProjectStatus(
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return 3000
+      const status = data.project_status
+      // 需要用户交互 → 暂停轮询
+      if (status === 'waiting_for_sources' || status === 'waiting_for_outline') return false
       // 项目已终态 → 停止轮询
-      if (data.project_status === 'completed' || data.project_status === 'failed') {
-        return false
-      }
+      if (status === 'completed' || status === 'failed') return false
       return 3000
     },
     // 页面不可见时依然继续轮询（后台 Tab）

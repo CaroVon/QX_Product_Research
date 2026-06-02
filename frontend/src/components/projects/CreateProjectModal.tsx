@@ -18,7 +18,7 @@ interface CreateProjectModalProps {
 }
 
 /**
- * "新建行研" 模态框
+ * "新建分析" 模态框
  *
  * 用户输入 Topic → 调用 POST /api/v1/projects → 跳转到进度页面
  */
@@ -45,20 +45,20 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>新建行业研究</DialogTitle>
+          <DialogTitle>新建产品分析</DialogTitle>
           <DialogDescription>
-            输入您想要研究的行业或主题，AI 将自动生成深度研究报告。
+            输入您想要分析的产品或主题，AI 将自动生成深度分析报告。
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <label htmlFor="topic" className="text-sm font-medium">
-              研究主题
+              分析主题
             </label>
             <Input
               id="topic"
-              placeholder="例如：AI眼镜行业、新能源汽车市场分析..."
+              placeholder="例如：智能手表产品分析、新能源汽车竞品对比..."
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               onKeyDown={(e) => {
@@ -85,7 +85,7 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
             loading={createProject.isPending}
             disabled={!topic.trim()}
           >
-            提交研究
+            提交分析
           </Button>
         </DialogFooter>
       </DialogContent>

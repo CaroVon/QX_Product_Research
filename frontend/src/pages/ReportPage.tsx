@@ -107,7 +107,7 @@ export function ReportPage() {
       {/* ─── 报告标题 ─────────────────────────────────────────── */}
       <div className="border-b pb-4">
         <h1 className="text-2xl font-bold">
-          {report?.topic ?? '行业研究报告'}
+          {report?.topic ?? '产品分析报告'}
         </h1>
         <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">

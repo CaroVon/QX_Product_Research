@@ -49,7 +49,7 @@ export function ThreePaneLayout({
   centerPane,
   rightPane,
 }: ThreePaneLayoutProps) {
-  const [rightPanel, setRightPanel] = useState<RightPanelView>('closed')
+  const [rightPanel, setRightPanel] = useState<RightPanelView>('citations')
 
   const toggleRightPanel = useCallback(() => {
     setRightPanel((prev) => (prev === 'closed' ? 'citations' : 'closed'))

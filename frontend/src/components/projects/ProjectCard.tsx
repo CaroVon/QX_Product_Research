@@ -14,10 +14,15 @@ interface ProjectCardProps {
  * 在控制台/项目列表中展示单个项目的信息缩略
  */
 export function ProjectCard({ project }: ProjectCardProps) {
-  const isProcessing = project.status === 'preparing_data' || project.status === 'waiting_outline_approval' || project.status === 'drafting'
+  const isProcessing = project.status === 'preparing_data'
+    || project.status === 'waiting_for_sources'
+    || project.status === 'preparing_outline'
+    || project.status === 'waiting_for_outline'
+    || project.status === 'drafting'
   const isCompleted = project.status === 'completed'
   const isFailed = project.status === 'failed'
-  const isAwaitingApproval = project.status === 'waiting_outline_approval'
+  const isAwaitingApproval = project.status === 'waiting_for_outline'
+  const isAwaitingSources = project.status === 'waiting_for_sources'
 
   return (
     <Link
@@ -51,7 +56,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
       <div className="mt-auto flex items-center justify-between">
         {isProcessing && (
           <span className="text-xs text-muted-foreground">
-            正在生成中...
+            {isAwaitingSources ? '待审核资料...' : isAwaitingApproval ? '待确认大纲...' : '正在生成中...'}
           </span>
         )}
         {isCompleted && (
