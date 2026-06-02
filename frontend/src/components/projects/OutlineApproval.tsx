@@ -19,7 +19,7 @@
  */
 
 import { useState } from 'react'
-import { CheckCircle2, Loader2, FileText, AlertCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, FileText, AlertCircle, Edit2, Eye } from 'lucide-react'
 import { Button } from '@/components/common/button'
 import type { OutlineSection } from '@/types/index'
 
@@ -63,9 +63,8 @@ function parseSections(outline: string): OutlineSection[] {
  *
  * 显示从后端拉取的大纲 Markdown，允许用户：
  * 1. 视觉审阅章节列表
- * 2. 点击"确认并开始撰写"按钮提交
- *
- * TODO: 后续迭代可扩展为 Tiptap 编辑器直接修改大纲
+ * 2. 切换到编辑模式修改大纲
+ * 3. 点击"确认并开始撰写"按钮提交（可携带用户修改后的大纲）
  */
 export function OutlineApproval({
   projectId,
@@ -76,12 +75,14 @@ export function OutlineApproval({
   confirmError,
 }: OutlineApprovalProps) {
   const [localError, setLocalError] = useState<string | null>(null)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editedOutline, setEditedOutline] = useState<string>(outlineContent ?? '')
 
   // 如果没有传入解析好的 sections，自行解析
   const sections = propSections.length > 0
     ? propSections
-    : outlineContent
-      ? parseSections(outlineContent)
+    : (isEditing ? editedOutline : outlineContent)
+      ? parseSections(isEditing ? editedOutline : (outlineContent ?? ''))
       : []
 
   // 如果 outlineContent 为空，显示骨架屏
@@ -100,14 +101,24 @@ export function OutlineApproval({
   }
 
   const handleConfirm = async () => {
-    if (!outlineContent) return
+    const finalOutline = isEditing ? editedOutline : (outlineContent ?? '')
+    if (!finalOutline.trim()) return
     setLocalError(null)
     try {
-      await onConfirm(outlineContent)
+      await onConfirm(finalOutline)
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : '确认失败，请重试')
     }
   }
+
+  const handleToggleEdit = () => {
+    if (!isEditing) {
+      setEditedOutline(outlineContent ?? '')
+    }
+    setIsEditing((v) => !v)
+  }
+
+  const displayedSections = parseSections(isEditing ? editedOutline : outlineContent)
 
   return (
     <div className="rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50/60 to-white p-6 shadow-sm">
@@ -122,24 +133,51 @@ export function OutlineApproval({
               大纲已生成完毕，请审阅
             </h3>
             <p className="mt-0.5 text-sm text-amber-700/70">
-              AI 已根据搜索结果为您的行业研究报告生成了以下大纲，
-              确认后 AI 将开始逐章节撰写内容。
+              确认后 AI 将根据此大纲逐章节撰写产品分析报告。你可以直接修改大纲再确认。
             </p>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={handleToggleEdit}
+          className="ml-4 inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 transition-colors"
+        >
+          {isEditing ? (
+            <>
+              <Eye className="h-3.5 w-3.5" />
+              预览
+            </>
+          ) : (
+            <>
+              <Edit2 className="h-3.5 w-3.5" />
+              编辑大纲
+            </>
+          )}
+        </button>
       </div>
 
-      {/* ─── 大纲预览 ─────────────────────────────────────────── */}
-      <div className="mb-4 max-h-64 overflow-y-auto rounded-lg border border-amber-200/60 bg-white/80 p-4">
-        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/90">
-          {outlineContent}
-        </pre>
+      {/* ─── 大纲预览 / 编辑 ─────────────────────────────────── */}
+      <div className="mb-4 rounded-lg border border-amber-200/60 bg-white/80">
+        {isEditing ? (
+          <textarea
+            value={editedOutline}
+            onChange={(e) => setEditedOutline(e.target.value)}
+            className="block h-64 w-full resize-none rounded-lg bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground/90 focus:outline-none focus:ring-1 focus:ring-amber-400"
+            placeholder="输入大纲内容（使用 ## 标题格式定义章节）..."
+          />
+        ) : (
+          <div className="max-h-64 overflow-y-auto p-4">
+            <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/90">
+              {outlineContent}
+            </pre>
+          </div>
+        )}
       </div>
 
       {/* ─── 章节统计 ─────────────────────────────────────────── */}
-      {sections.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          {sections.map((section) => (
+      {displayedSections.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          {displayedSections.map((section) => (
             <span
               key={section.index}
               className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700"
@@ -179,7 +217,7 @@ export function OutlineApproval({
         </Button>
 
         <p className="text-xs text-muted-foreground">
-          共 {sections.length} 个章节 · 确认后不可撤销
+          共 {displayedSections.length} 个章节 · 确认后不可撤销
         </p>
       </div>
     </div>
