@@ -587,6 +587,9 @@ async def stream_draft(
         yield f"event: draft_start\ndata: {json.dumps({'project_id': pid_str, 'total_sections': total_sections})}\n\n"
 
         while wait_cycles < max_wait_cycles:
+            # 强制刷新 project 对象以获取最新状态
+            await db.refresh(project)
+
             # ── 心跳注释（保持连接存活） ──────────────────────
             if wait_cycles % heartbeat_interval == 0:
                 yield f": heartbeat {wait_cycles}\n\n"
@@ -612,23 +615,6 @@ async def stream_draft(
                     )
 
                 last_block_count = len(all_blocks)
-
-                # 检查是否全部章节的任务都已完成
-                task_result = await db.execute(
-                    select(Task).where(
-                        Task.project_id == project_id,
-                        Task.task_type == TaskType.WRITE_SECTION,
-                    )
-                )
-                write_tasks = task_result.scalars().all()
-                all_done = all(t.status == TaskStatus.COMPLETED for t in write_tasks)
-
-                if all_done and len(write_tasks) > 0:
-                    yield (
-                        f"event: draft_complete\n"
-                        f"data: {json.dumps({'project_id': pid_str, 'total_blocks': last_block_count})}\n\n"
-                    )
-                    return
 
             # 也检查项目是否已到终态
             if project.status == ProjectStatus.COMPLETED:
@@ -896,3 +882,68 @@ async def list_project_logs(
         logs=[ProjectLogResponse.model_validate(orm_to_dict(l)) for l in logs],
         total_count=len(logs),
     )
+
+
+# ================================================================
+# DELETE /api/v1/projects/{project_id} —— 删除项目
+# ================================================================
+
+@router.delete("/{project_id}", response_model=MessageResponse)
+async def delete_project(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    删除指定项目及其所有关联数据。
+
+    清理范围：
+    - 数据库：Project、Task、DocumentBlock、Document、ProjectLog
+    - 磁盘：爬取数据缓存、PDF 报告、Markdown 报告
+    """
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"项目 {project_id} 不存在",
+        )
+
+    # ── 1. 删除关联子记录（手动级联，因 ORM relationship 未配置 cascade） ──
+    await db.execute(delete(Task).where(Task.project_id == project_id))
+    await db.execute(delete(DocumentBlock).where(DocumentBlock.project_id == project_id))
+    await db.execute(delete(Document).where(Document.project_id == project_id))
+    await db.execute(delete(ProjectLog).where(ProjectLog.project_id == project_id))
+
+    # ── 2. 清理磁盘文件 ──────────────────────────────────────────
+    settings = get_settings()
+
+    # 爬取数据缓存
+    crawled_path = get_crawled_data_path(str(project_id))
+    if os.path.exists(crawled_path):
+        os.remove(crawled_path)
+        logger.info("已清理爬取数据缓存 | project=%s | path=%s", project_id, crawled_path)
+
+    # PDF 文件
+    if project.pdf_path:
+        pdf_full = os.path.join(settings.OUTPUT_DIR, project.pdf_path)
+        if os.path.exists(pdf_full):
+            os.remove(pdf_full)
+            logger.info("已清理 PDF | project=%s | path=%s", project_id, pdf_full)
+
+    # Markdown 文件
+    if project.md_path:
+        md_full = os.path.join(settings.OUTPUT_DIR, project.md_path)
+        if os.path.exists(md_full):
+            os.remove(md_full)
+            logger.info("已清理 Markdown | project=%s | path=%s", project_id, md_full)
+
+    # ── 3. 删除项目本身 ──────────────────────────────────────────
+    await db.delete(project)
+    await db.commit()
+
+    log_state_transition(str(project_id), project.status.value, "(已删除)", "用户手动删除项目")
+    logger.info("项目已删除 | project=%s | topic=%s", project_id, project.topic)
+
+    return MessageResponse(detail=f"项目 '{project.topic}' 已删除")

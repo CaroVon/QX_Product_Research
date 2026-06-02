@@ -7,6 +7,8 @@ Celery 应用实例
 
 from __future__ import annotations
 
+import sys
+
 from celery import Celery
 
 from app.core.config import get_settings
@@ -14,15 +16,9 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # ─── Broker 地址 ──────────────────────────────────────────────
-# 当没有 Redis 可用时，使用内存传输 + eager 模式（任务同步执行）
-# 生产环境请确保设置了 CELERY_BROKER_URL
-_LOCAL_DEV_MODE = False
-_broker_url = settings.CELERY_BROKER_URL
-_backend_url = settings.CELERY_RESULT_BACKEND
-if not _broker_url:
-    _broker_url = "memory://"
-    _backend_url = "cache+memory://"
-    _LOCAL_DEV_MODE = True
+# 强制使用 Redis 作为消息代理；默认指向 docker-compose 中的 Redis 容器
+_broker_url = settings.CELERY_BROKER_URL or "redis://127.0.0.1:6379/0"
+_backend_url = settings.CELERY_RESULT_BACKEND or "redis://127.0.0.1:6379/0"
 
 # ─── 创建 Celery 应用 ─────────────────────────────────────────
 celery_app = Celery(
@@ -60,6 +56,7 @@ celery_app.conf.update(
     # 默认重试策略
     task_default_retry_delay=10,  # 首次重试延迟 10 秒
     task_max_retries=3,  # 最多重试 3 次
-    # 本地开发模式：有 Redis 时异步执行（需启动 Celery Worker），无 Redis 时同步执行
-    task_always_eager=_LOCAL_DEV_MODE,
+    # 注：已移除 task_always_eager（强制异步）
+    # 注：Redis 3.x 需强制 RESP2 协议（不支持 HELLO 命令/RESP3）
+    broker_transport_options={"protocol": 2},
 )

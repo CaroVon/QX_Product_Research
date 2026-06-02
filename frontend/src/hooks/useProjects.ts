@@ -69,3 +69,16 @@ export function useCreateProject() {
     },
   })
 }
+
+/** 删除项目 */
+export function useDeleteProject() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (projectId: string) => projectsApi.delete(projectId),
+    onSuccess: () => {
+      // 删除成功后，刷新项目列表
+      queryClient.invalidateQueries({ queryKey: PROJECTS_KEY })
+    },
+  })
+}

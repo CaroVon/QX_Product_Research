@@ -152,7 +152,8 @@ services:
     command: >
       celery -A app.core.celery_app.celery_app worker
       --loglevel=info
-      --concurrency=2
+      --concurrency=4
+      --pool=threads
       --queues=celery
       --hostname=worker1@%h
       --without-gossip

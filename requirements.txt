@@ -1,39 +1,66 @@
 # ============================================================
-# Research Agent - Core Dependencies
-# ============================================================
-# 用途: 运行 app/ 目录下的研究引擎核心逻辑（CLI 模式）
-# 完整服务（FastAPI + Celery + 前端）需额外安装:
-#   pip install -r backend/requirements.txt
-#   cd frontend && npm install
+# QX Product Research Agent — 完整 Python 依赖
+# Version: 0.1.0 | Python: 3.10+ | Updated: 2026-06-02
+# 安装: pip install -r requirements.txt
 # ============================================================
 
-# --- HTTP & Environment ---
-requests>=2.28.0
-python-dotenv>=1.0.0
-httpx>=0.27.0
+# --- Web Framework (FastAPI Backend) ---
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+starlette==1.2.1
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-multipart==0.0.30
+
+# --- Database ---
+SQLAlchemy[asyncio]==2.0.50
+aiosqlite==0.22.1
+asyncpg==0.31.0
+psycopg2-binary==2.9.12
+alembic==1.18.4
+
+# --- Async Task Queue ---
+celery==5.6.3
+kombu==5.6.2
+redis==4.6.0
+
+# --- HTTP Client ---
+httpx==0.28.1
+requests==2.33.0
+python-dotenv==1.2.2
 
 # --- LangChain Ecosystem ---
-langchain-core>=0.2.0
-langchain-community>=0.2.0
-langchain-openai>=0.1.0
-langchain-chroma>=0.1.0
-langchain-text-splitters>=0.2.0
+langchain-core==1.4.0
+langchain-community==0.4.2
+langchain-openai==1.2.2
+langchain-chroma==1.1.0
+langchain-classic==1.0.7
+langchain-text-splitters==1.1.2
 
 # --- Embedding & Retrieval ---
-sentence-transformers>=2.7.0
-jieba>=0.42.1
+sentence-transformers==5.5.1
+chromadb==1.5.9
+jieba==0.42.1
+scikit-learn==1.8.0
 
 # --- External APIs ---
-tavily-python>=0.3.0
-firecrawl-py>=1.0.0
+tavily-python==0.7.25
+firecrawl-py==4.28.2
+openai==2.38.0
 
 # --- Report Generation ---
-markdown2>=2.4.0
-weasyprint>=60.0
+markdown2==2.5.5
+weasyprint==68.1
+Pillow==12.2.0
 
-# --- Async Database (Backend Worker) ---
-aiosqlite>=0.22.0
+# --- Testing ---
+pytest==9.0.3
+pytest-asyncio==1.4.0
 
-# --- Legacy PDF Generator (optional) ---
-# Uncomment if using the ReportLab-based pdf_generator01.py
-# reportlab>=4.0.0
+# --- Utilities ---
+watchfiles==1.2.0
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+Jinja2==3.1.6
+click==8.4.1
+rich==15.0.0

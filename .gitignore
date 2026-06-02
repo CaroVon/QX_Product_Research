@@ -75,3 +75,6 @@ htmlcov/
 
 # Test databases
 test_*.db
+
+# fix
+fix/

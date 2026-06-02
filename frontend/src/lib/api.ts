@@ -141,6 +141,13 @@ export const projectsApi = {
       body: JSON.stringify(data),
     })
   },
+
+  /** 删除项目及其所有关联数据 */
+  delete(projectId: string): Promise<{ detail: string }> {
+    return request(`/projects/${projectId}`, {
+      method: 'DELETE',
+    })
+  },
 }
 
 /**
