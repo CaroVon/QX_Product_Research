@@ -32,7 +32,7 @@ if sys.platform == "win32" and sys.version_info < (3, 14):
     except ImportError:
         pass
 
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
@@ -87,6 +87,22 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         logger.info("[DB] 数据库表已就绪（create_all 幂等操作）")
 
+    # 确保 demo 用户存在（否则外键约束会导致项目创建失败）
+    from sqlalchemy import text as sa_text
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            sa_text("SELECT id FROM users WHERE id = '00000000000000000000000000000001'")
+        )
+        if result.fetchone() is None:
+            await conn.execute(
+                sa_text("INSERT INTO users (id, username, email) VALUES "
+                        "('00000000000000000000000000000001', 'demo', 'demo@qx-agent.local')")
+            )
+            await conn.commit()
+            logger.info("[DB] Demo 用户已创建 (id: 0000...0001)")
+        else:
+            logger.info("[DB] Demo 用户已存在")
+
     yield  # 应用运行中...
 
     # ─── 关闭 ──────────────────────────────────────────────────
@@ -126,10 +142,14 @@ def create_app() -> FastAPI:
 
     # ─── 静态文件服务 ──────────────────────────────────────────
     # 提供输出文件（PDF/Markdown/图片）的 HTTP 访问
-    # 文件位于 /app/outputs 目录，通过 /api/v1/files/{path} 访问
     outputs_path = Path(settings.OUTPUT_DIR)
     outputs_path.mkdir(parents=True, exist_ok=True)
     app.mount("/api/v1/files", StaticFiles(directory=str(outputs_path)), name="files")
+
+    # 托管前端构建产物 (React SPA)
+    _frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
+    if _frontend_dist.exists():
+        app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
 
     # ─── 全局异常处理 ──────────────────────────────────────────
     @app.exception_handler(Exception)
@@ -140,18 +160,18 @@ def create_app() -> FastAPI:
             content={"detail": f"服务器内部错误: {str(exc)}", "error_code": "INTERNAL_ERROR"},
         )
 
-    # ─── 根路径 —— 前端仪表板 ──────────────────────────────────
-    STATIC_DIR = Path(__file__).parent / "static"
+    # ─── 根路径 —— 前端 SPA ──────────────────────────────────
+    _frontend_index = Path(__file__).parent.parent.parent / "frontend" / "dist" / "index.html"
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index():
-        """返回前端仪表板首页"""
-        index_path = STATIC_DIR / "index.html"
-        if index_path.exists():
-            return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
-        return HTMLResponse(content="<h1>Research Agent API</h1><p>前端页面未找到，请访问 <a href='/docs'>Swagger 文档</a></p>")
+        """返回 React SPA 首页"""
+        if _frontend_index.exists():
+            return HTMLResponse(content=_frontend_index.read_text(encoding="utf-8"))
+        # 兜底
+        return HTMLResponse(content="<h1>QX Product Research Agent API</h1><p>前端未构建，请运行 npm run build，或访问 <a href='/docs'>Swagger 文档</a></p>")
 
-    # ─── 健康检查 ──────────────────────────────────────────────
+    # ─── 健康检查 (必须在 SPA catch-all 之前注册) ──────────────
     @app.get("/health")
     async def health_check():
         return {
@@ -190,6 +210,16 @@ def create_app() -> FastAPI:
                 "database": "disconnected",
                 "detail": str(e),
             }
+
+    # ─── SPA 兜底：非 API 路径 → index.html (必须最后注册) ───
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(request: Request, full_path: str):
+        """React SPA client-side routing fallback"""
+        if full_path.startswith(("api/", "docs", "redoc", "openapi.json", "health", "assets/", "outputs/")):
+            raise HTTPException(status_code=404)
+        if _frontend_index.exists():
+            return HTMLResponse(content=_frontend_index.read_text(encoding="utf-8"))
+        raise HTTPException(status_code=404)
 
     logger.info("[APP] FastAPI 应用初始化完成")
     return app

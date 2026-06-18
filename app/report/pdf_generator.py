@@ -1,17 +1,14 @@
 """
 ============================================================
-横版 PPT 风格 PDF 生成器 —— 基于 WeasyPrint 高级 CSS 排版
+横版 PPT 风格 PDF 生成器 —— 行业级双栏瀑布流排版
 ============================================================
 
 将 Markdown 分析报告转化为 16:9 横版路演级 PDF:
   - 真正 16:9 横版页面 (320mm × 180mm，比例 1.778:1)
-  - 杂志级沉浸式封面 (全屏概念图 + 暗色遮罩)
-  - 🆕 CSS 高级渐变兜底封面（生图失败时自动启用）
-  - PPT 大字号排版体系 (正文 ≥ 14pt)
-  - 强制单页单主题 (h2 → page-break-before)
-  - 页眉章节导航 + 页脚页码（滑动编号）
-  - 纯 Block 布局，完全杜绝 flex/grid
-  - 商业汇报标准：合理留白、清晰层级、专业配色
+  - 杂志级沉浸式封面 (保留全屏概念图 + 暗色遮罩)
+  - 🆕 顶级咨询公司范式：引入 CSS Columns 两栏瀑布流
+  - 🆕 核心论点置顶：Blockquote 转化为高亮 Summary 卡片
+  - 🆕 数据可视化强化：引入专业表格斑马线与品牌色顶条
 """
 
 import logging
@@ -25,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════
-# 品牌色彩系统 (苹果极简白 + 深空灰 + 科技亮蓝)
+# 品牌色彩系统 (融合咨询范式与原有设定)
 # ══════════════════════════════════════════════════════════
 COLOR = {
     "bg_dark":     "#0f1117",   # 深空灰封面背景
@@ -56,13 +53,6 @@ def _safe_topic(topic: str) -> str:
 def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     """
     将 Markdown 分析报告渲染为横版 PPT 风格 PDF。
-
-    Args:
-        md_path:      Markdown 文件路径
-        pdf_path:     PDF 输出路径
-        cover_image:  (可选) 封面概念图的绝对/相对路径。
-                      若文件存在则用于封面全屏背景，
-                      🆕 若不存在则使用 CSS 高级渐变兜底。
     """
     logger.info("横版路演级 PDF 渲染启动...")
 
@@ -77,6 +67,14 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     # 移除 H1 (封面已承载)，保留正文用于幻灯片内容
     clean_md = re.sub(r"^#\s+.+", "", md_content, count=1).strip()
 
+    # 移除 emoji 字符（WeasyPrint 字体不支持，会渲染为 .notdef 方框）
+    clean_md = re.sub(
+        r'[\U0001F300-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF'
+        r'\U00002600-\U000027BF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF'
+        r'\U0001F900-\U0001F95F\U00002B50\U0001F004\U0001F0CF]',
+        '', clean_md
+    )
+
     # ── 3. Markdown → HTML ────────────────────────────────
     html_body = markdown2.markdown(
         clean_md,
@@ -84,7 +82,6 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     )
 
     # ── 4. 封面图逻辑 ─────────────────────────────────────
-    # 检测 cover_image 是否存在，不存在则回退 CSS 渐变封面
     has_cover_bg = bool(cover_image) and os.path.isfile(cover_image)
     if has_cover_bg:
         abs_img = os.path.abspath(cover_image).replace("\\", "/")
@@ -114,13 +111,10 @@ def _build_html(
     title: str, body_html: str, has_bg: bool, img_path: str
 ) -> str:
     """
-    组装完整的 HTML 文档（封面 .cover + 正文 .slide-deck）。
-    所有 CSS 规则遵循 WeasyPrint 兼容的 Block 布局范式。
+    组装完整的 HTML 文档。融合了麦肯锡级双栏排版与原有沉浸式封面。
     """
-
     cover_html = _build_cover(title, has_bg, img_path)
-
-    # 移除 body_html 中可能残留的第一个 h1 (避免与封面重复)
+    # 移除被带入正文的 h1 标题
     body_html = re.sub(r"<h1[^>]*>.*?</h1>", "", body_html, count=1, flags=re.DOTALL)
 
     return f"""<!DOCTYPE html>
@@ -130,61 +124,38 @@ def _build_html(
 <style>
     /* ========================================================
     【页面基础】—— 真正 16:9 横版 = 320mm × 180mm
-    比例 1.778:1，完美适配现代宽屏显示器和投影
     ======================================================== */
     @page {{
         size: 320mm 180mm;
-        margin: 0 16mm 10mm 16mm;
-        background-color: {COLOR["bg_body"]};
+        margin: 18mm 20mm 15mm 20mm;
+        background-color: #F8F9FA;
 
         @top-left {{
-            content: string(chapter);
-            font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+            content: "CONFIDENTIAL · 产品深度研究路演方案";
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
             font-size: 8pt;
-            font-weight: 600;
-            color: {COLOR["accent"]};
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            padding-left: 2mm;
-        }}
-        @top-right {{
-            content: "产品深度研究 · 路演方案";
-            font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
-            font-size: 7pt;
-            color: {COLOR["muted"]};
+            color: #868E96;
             letter-spacing: 1px;
-            padding-right: 2mm;
         }}
         @top-center {{
             content: "";
-            border-bottom: 0.6px solid {COLOR["accent"]};
+            border-bottom: 2px solid #0052CC;
             width: 100%;
         }}
-
-        @bottom-left {{
-            content: counter(page) " /";
-            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
-            font-size: 8pt;
-            color: {COLOR["muted"]};
-            padding-top: 4mm;
-        }}
         @bottom-right {{
-            content: "CONFIDENTIAL · 产品前沿战略研究院";
-            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
-            font-size: 7pt;
-            color: {COLOR["muted"]};
-            letter-spacing: 0.5px;
+            content: counter(page);
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            font-size: 14pt;
+            font-weight: bold;
+            color: #0052CC;
             padding-top: 4mm;
         }}
     }}
 
-    /*
-     * 封面页特殊规则：移除页眉页脚，铺满整页
-     */
     @page cover {{
         size: 320mm 180mm;
-        background-color: {COLOR["bg_dark"]};
         margin: 0;
+        background-color: {COLOR["bg_dark"]};
         @top-left   {{ content: none; }}
         @top-right  {{ content: none; }}
         @top-center {{ content: none; border-bottom: none; }}
@@ -193,22 +164,22 @@ def _build_html(
     }}
 
     /* ========================================================
-    【全局重置】—— 保证跨平台字体一致性
+    【全局重置与字体】
     ======================================================== */
     *, *::before, *::after {{ box-sizing: border-box; }}
 
     body {{
         font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC',
                      'WenQuanYi Zen Hei', 'Helvetica Neue', sans-serif;
-        color: {COLOR["body_text"]};
-        line-height: 1.85;
-        font-size: 14pt;
+        color: #212529;
+        line-height: 1.7;
+        font-size: 13pt;
         margin: 0;
         padding: 0;
     }}
 
     /* ========================================================
-    【封面】—— 杂志级沉浸式开屏
+    【封面排版】—— 沉浸式杂志开屏
     ======================================================== */
     .cover {{
         display: block;
@@ -241,9 +212,6 @@ def _build_html(
         background-color: {COLOR["overlay"]};
     }}
 
-    /*
-     * CSS 科技感渐变兜底封面
-     */
     .cover-gradient-bg {{
         position: absolute;
         top: 0;
@@ -308,146 +276,186 @@ def _build_html(
     }}
 
     /* ========================================================
-    【正文幻灯片区域】—— slide-deck
-    每张 "幻灯片" = 一个 h2 章节块，强制分页
+    【正文幻灯片架构：行业级分栏瀑布流】
     ======================================================== */
     .slide-deck {{
         display: block;
-        padding-top: 4mm;
+        column-count: 2;
+        column-gap: 16mm;
+        column-fill: auto;
         max-width: 100%;
     }}
 
-    /*
-     * h2 核心规则：强制 page-break-before → 每个章节从新页开始。
-     * 这是实现 "PPT 翻页感" 的关键。
-     */
+    /* 章节大标题：跨栏展示 */
     h2 {{
-        font-size: 20pt;
+        column-span: all;
+        font-size: 24pt;
         font-weight: 700;
-        color: {COLOR["h2_color"]};
-        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
-        border-left: 5px solid {COLOR["accent"]};
-        padding-left: 12px;
+        color: #0B2447;
         margin-top: 0;
-        margin-bottom: 16pt;
-        line-height: 1.35;
-        string-set: chapter self;
+        margin-bottom: 8mm;
+        line-height: 1.2;
+        padding-bottom: 4mm;
+        border-bottom: 2px solid #E9ECEF;
         page-break-before: always;
-        page-break-inside: avoid;
         page-break-after: avoid;
     }}
 
-    h3 {{
-        font-size: 16pt;
-        font-weight: 600;
-        color: {COLOR["h2_color"]};
-        margin-top: 20pt;
-        margin-bottom: 12pt;
+    /* 核心观点框：咨询风数据卡片 */
+    blockquote {{
+        column-span: all;
+        background-color: #F4F7FA;
+        border-left: 6px solid #2D7CF6;
+        padding: 6mm 10mm;
+        margin: 0 0 10mm 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 13pt;
+        font-weight: 500;
+        color: #2C3038;
+        line-height: 1.6;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
         page-break-inside: avoid;
+    }}
+    blockquote p {{ margin: 0; font-weight: bold; color: #1A1F2E; }}
+
+    /* H3 模块标签化：提升视觉层次 */
+    h3 {{
+        display: inline-block;
+        background-color: #EBF2FE;
+        color: #1A5DC4;
+        font-size: 13pt;
+        font-weight: bold;
+        padding: 4px 12px;
+        border-radius: 4px;
+        margin-top: 10pt;
+        margin-bottom: 8pt;
+        border: none;
         page-break-after: avoid;
+        page-break-inside: avoid;
     }}
 
     h4 {{
-        font-size: 14.5pt;
+        font-size: 12pt;
         font-weight: 600;
-        color: {COLOR["body_text"]};
-        margin-top: 16pt;
-        margin-bottom: 10pt;
+        color: #343A40;
+        margin-top: 10pt;
+        margin-bottom: 4pt;
+        page-break-after: avoid;
     }}
 
     p {{
         margin-top: 0;
-        margin-bottom: 14pt;
+        margin-bottom: 8pt;
         text-align: justify;
-        text-indent: 0;
-        orphans: 3;
-        widows: 3;
+        color: #495057;
     }}
 
+    /* 列表UI化重构 */
     ul, ol {{
-        margin-top: 8pt;
-        margin-bottom: 16pt;
-        padding-left: 22pt;
+        margin-top: 6pt;
+        margin-bottom: 12pt;
+        padding-left: 0;
+        list-style-type: none; /* 移除默认圆点 */
     }}
 
     li {{
         margin-bottom: 8pt;
-        font-size: 14pt;
-        line-height: 1.75;
+        font-size: 12pt;
+        line-height: 1.5;
+        position: relative;
+        padding-left: 14pt;
+        page-break-inside: avoid; /* 极度重要：防止列表项被切分到两栏 */
+        color: #343A40;
     }}
 
-    blockquote {{
-        display: block;
-        margin: 20pt 0;
-        padding: 14pt 18pt;
-        background-color: {COLOR["white"]};
-        border-left: 4px solid {COLOR["accent"]};
-        border-radius: 0 4px 4px 0;
-        color: {COLOR["body_text"]};
-        font-size: 13.5pt;
-        line-height: 1.75;
-        page-break-inside: avoid;
+    /* 自定义现代感列表符号 */
+    ul li::before {{
+        content: "■";
+        position: absolute;
+        left: 0;
+        top: -1pt;
+        color: #2D7CF6;
+        font-size: 9pt;
     }}
 
-    img {{
-        max-width: 85%;
-        display: block;
-        margin: 20pt auto;
-        border-radius: 6px;
-        border: 0.5px solid {COLOR["divider"]};
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
-        page-break-inside: avoid;
+    /* 强调文字配色 */
+    strong {{
+        color: #0B2447;
+        font-weight: 700;
     }}
 
+    /* 行业级数据表格优化 */
     table {{
+        column-span: all; /* 跨栏展示防止表格挤压 */
         width: 100%;
         border-collapse: collapse;
-        margin: 18pt 0;
-        font-size: 12pt;
+        margin: 12pt 0;
+        font-size: 10.5pt;
         page-break-inside: avoid;
+        background-color: #FFFFFF;
+        border-radius: 6px;
+        overflow: hidden; /* 圆角表格边缘修剪 */
+        border: 1px solid #DEE2E6;
     }}
     th {{
-        background-color: {COLOR["header_bg"]};
-        color: {COLOR["white"]};
+        background-color: #F8F9FA;
+        color: #1A1F2E;
         padding: 8pt 10pt;
-        font-weight: 600;
+        font-weight: bold;
+        border-bottom: 2px solid #2D7CF6; /* 品牌色顶条 */
         text-align: left;
-        font-size: 11pt;
     }}
     td {{
-        padding: 7pt 10pt;
-        border-bottom: 0.5px solid {COLOR["divider"]};
-        background-color: {COLOR["white"]};
+        padding: 8pt 10pt;
+        border-bottom: 1px solid #E9ECEF;
+        color: #495057;
+    }}
+    tr:last-child td {{
+        border-bottom: none;
+    }}
+    tr:nth-child(even) td {{ background-color: #FBFBFC; }} /* 极浅斑马线 */
+
+    /* 图片排版 (跨栏展示) */
+    img {{
+        column-span: all;
+        max-width: 100%;
+        max-height: 80mm;
+        object-fit: contain;
+        margin: 10mm auto;
+        border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        page-break-inside: avoid;
     }}
 
+    /* 代码块与页脚 */
     pre {{
         background-color: #1e2233;
         color: #c8d6e5;
-        padding: 14pt 16pt;
+        padding: 10pt 12pt;
         border-radius: 4px;
-        font-size: 10pt;
-        line-height: 1.6;
+        font-size: 9.5pt;
+        line-height: 1.5;
         overflow-x: auto;
         page-break-inside: avoid;
     }}
     code {{
         font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
-        font-size: 9.5pt;
     }}
 
     .footnotes {{
-        margin-top: 40pt;
-        border-top: 1px dashed {COLOR["muted"]};
-        padding-top: 14pt;
-        font-size: 10pt;
-        color: {COLOR["muted"]};
+        column-span: all;
+        margin-top: 15mm;
+        border-top: 1px solid #DEE2E6;
+        padding-top: 4mm;
+        font-size: 9pt;
+        color: #ADB5BD;
     }}
 
     hr {{
         border: none;
         height: 1px;
-        background-color: {COLOR["divider"]};
-        margin: 24pt 0;
+        background-color: #DEE2E6;
+        margin: 15pt 0;
     }}
 </style>
 </head>
@@ -481,7 +489,6 @@ def _build_cover(title: str, has_bg: bool, img_path: str) -> str:
         )
         overlay_html = '<div class="cover-overlay"></div>'
     else:
-        # 🆕 CSS 渐变兜底：深空灰 + 亮蓝光晕 + 紫色点缀
         bg_html = '<div class="cover-gradient-bg"></div>'
         overlay_html = '<div class="cover-overlay"></div>'
 
@@ -497,7 +504,7 @@ def _build_cover(title: str, has_bg: bool, img_path: str) -> str:
         </div>
         <div class="cover-footer">
             <strong>出品机构</strong>&nbsp; 产品前沿战略研究院<br>
-            <strong>核心引擎</strong>&nbsp; 硅基流动 FLUX.1 多模态视觉管道<br>
+            <strong>核心引擎</strong>&nbsp; 硅基流动 AI 多模态视觉管道<br>
             <strong>数据溯源</strong>&nbsp; 混合 RAG 多向并发权威检索链路
         </div>
     </div>"""

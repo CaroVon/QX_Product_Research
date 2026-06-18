@@ -1,0 +1,2 @@
+# 停止项目
+bash /mnt/d/DEV/agents/QX_product_agent/stop_all.sh

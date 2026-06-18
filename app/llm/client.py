@@ -1,6 +1,6 @@
 """
 ============================================================
-LLM 客户端 —— 文本引擎 (DeepSeek) + 图像引擎 (硅基流动 FLUX.1)
+LLM 客户端 —— 文本引擎 (DeepSeek) + 图像引擎 (硅基流动 图像模型)
 ============================================================
 
 所有配置从集中式 Settings 读取，消除了模块级 load_dotenv() 副作用。
@@ -38,7 +38,10 @@ def _get_config() -> dict:
             "deepseek_base_url": s.DEEPSEEK_BASE_URL,
             "deepseek_model": s.DEEPSEEK_MODEL,
             "siliconflow_api_key": s.SILICONFLOW_API_KEY,
-            "siliconflow_image_model": s.SILICONFLOW_IMAGE_MODEL,
+            "siliconflow_image_model": (
+                getattr(s, "SILICONFLOW_IMAGE_MODEL", None)
+                or "Qwen/Qwen-Image"
+            ),
             "image_width": int(s.CONCEPT_IMAGE_WIDTH),
             "image_height": int(s.CONCEPT_IMAGE_HEIGHT),
         }
@@ -50,7 +53,8 @@ def _get_config() -> dict:
             "deepseek_model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
             "siliconflow_api_key": os.getenv("SILICONFLOW_API_KEY", ""),
             "siliconflow_image_model": os.getenv(
-                "SILICONFLOW_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell",
+                "SILICONFLOW_IMAGE_MODEL",
+                "Tongyi-MAI/Z-Image-Turbo",
             ),
             "image_width": int(os.getenv("CONCEPT_IMAGE_WIDTH", "1024")),
             "image_height": int(os.getenv("CONCEPT_IMAGE_HEIGHT", "576")),
@@ -93,7 +97,7 @@ def get_llm():
 
 
 # ══════════════════════════════════════════════════════════
-# 图像引擎：硅基流动 (SiliconFlow) FLUX.1-schnell
+# 图像引擎：硅基流动 (SiliconFlow) 图像生成模型
 # ══════════════════════════════════════════════════════════
 
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
@@ -119,7 +123,7 @@ def generate_image(
     timeout: int = 120,
 ) -> bool:
     """
-    调用硅基流动 FLUX.1 模型生成 16:9 横版概念图。
+    调用硅基流动图像生成模型生成 16:9 横版概念图。
 
     Args:
         prompt:      图片主题描述（中文/英文均可，内部会包一层风格 Prompt）

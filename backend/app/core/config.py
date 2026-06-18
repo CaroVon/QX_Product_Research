@@ -108,7 +108,7 @@ class Settings(BaseSettings):
 
     # ─── 硅基流动 (SiliconFlow) 图像生成 ─────────────────────────
     SILICONFLOW_API_KEY: str = Field(default="")
-    SILICONFLOW_IMAGE_MODEL: str = Field(default="black-forest-labs/FLUX.1-schnell")
+    SILICONFLOW_IMAGE_MODEL: str = Field(default="Tongyi-MAI/Z-Image-Turbo")
     CONCEPT_IMAGE_WIDTH: str = Field(default="1024")
     CONCEPT_IMAGE_HEIGHT: str = Field(default="576")
 
