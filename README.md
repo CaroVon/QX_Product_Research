@@ -394,7 +394,7 @@ cd frontend && npm run dev
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| **前端工作台** | **http://localhost:5173** | 三栏交互界面 |
+| **前端工作台** | **http://localhost:8000** | 三栏交互界面 |
 | API 文档 (Swagger) | http://localhost:8000/docs | OpenAPI 交互文档 |
 | API 文档 (ReDoc) | http://localhost:8000/redoc | 备选文档样式 |
 | 健康检查 | http://localhost:8000/health | 服务存活检测 |
