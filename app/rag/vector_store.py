@@ -125,9 +125,28 @@ def build_vector_store(
     # ── 2. 持久化原始 Chunks 到本地（BM25 检索） ────────
     os.makedirs(bm25_dir, exist_ok=True)
     bm25_path = os.path.join(bm25_dir, "docs.pkl")
+
+    # 追加模式：加载已有语料并合并，防止多批次写入时互相覆盖
+    existing_docs: list[Document] = []
+    if os.path.exists(bm25_path):
+        try:
+            with open(bm25_path, "rb") as f:
+                existing_docs = pickle.load(f)
+            logger.info("BM25 已有 %d 个文档，将追加 %d 个新文档", len(existing_docs), len(docs))
+        except Exception as e:
+            logger.warning("BM25 已有语料加载失败，将覆盖写入: %s", e)
+
+    # 基于 (content, url) 去重：已存在的切片不再重复写入
+    seen = {(d.page_content, d.metadata.get("url", "")) for d in existing_docs}
+    new_unique = [d for d in docs if (d.page_content, d.metadata.get("url", "")) not in seen]
+    all_docs = existing_docs + new_unique
+
     with open(bm25_path, "wb") as f:
-        pickle.dump(docs, f)
-    logger.info("BM25 语料已构建: %s (%d 个文档)", bm25_path, len(docs))
+        pickle.dump(all_docs, f)
+    logger.info(
+        "BM25 语料已更新: %s (追加 %d，去重后总计 %d 个文档)",
+        bm25_path, len(new_unique), len(all_docs),
+    )
 
     logger.info(
         "Vector Store + BM25 构建完毕 (project=%s, chunks=%d)",

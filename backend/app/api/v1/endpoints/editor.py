@@ -20,6 +20,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from sqlalchemy import select
@@ -29,6 +30,8 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.document_block import DocumentBlock
 from app.models.project import Project, ProjectStatus
+from app.schemas import EditorChatRequest
+from app.rag.rag_pipeline import retrieve_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/editor", tags=["editor"])
@@ -281,3 +284,92 @@ async def revise_block(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"块级改写失败: {str(e)}",
         )
+
+
+# ══════════════════════════════════════════════════════════
+# 🆕 POST /api/v1/editor/chat —— 侧边栏大模型流式对话
+# ══════════════════════════════════════════════════════════
+
+_CHAT_WORK_SYSTEM = (
+    "你是一个专业的产品分析师与报告撰写助手。"
+    "请务必优先基于【项目知识库参考】或【编辑器选中文本参考】中的信息来客观、严谨地回答用户问题。"
+    "如果是提取或总结任务，请直接列出核心主题，不要包含多余的寒暄。"
+)
+_CHAT_GENERAL_SYSTEM = (
+    "你是一个友好的 AI 助手，请自然、轻松地回答我的问题。"
+)
+
+
+@router.post("/chat")
+async def chat_with_editor(body: EditorChatRequest):
+    """
+    侧边栏大模型对话（SSE 流式输出）。
+
+    支持传入编辑器中选中的文本作为辅助上下文，
+    支持工作模式 (work) 与聊天模式 (chat) 切换。
+    """
+    settings = get_settings()
+
+    # 1. 确定 System Prompt
+    sys_prompt = _CHAT_WORK_SYSTEM if body.chat_mode == "work" else _CHAT_GENERAL_SYSTEM
+
+    # 2. 构建消息体
+    messages = [{"role": "system", "content": sys_prompt}]
+
+    for msg in body.history:
+        messages.append({"role": msg.role, "content": msg.content})
+
+    # 拼接当前用户提问与选中文本
+    current_content = body.message
+    if body.selected_text:
+        current_content += f"\n\n【编辑器选中文本参考】\n{body.selected_text}"
+
+    # 🚀 RAG 检索逻辑（仅在 work 模式下触发，避免闲聊浪费 Token 和耗时）
+    if body.chat_mode == "work" or "test" in body.message.lower():  # 兼容聊天模式下强制测试文档
+        try:
+            # 去当前 project_id 的隔离库中召回 5 个相关切片
+            rag_context = retrieve_context(
+                query=body.message,
+                k=5,
+                project_id=str(body.project_id),
+            )
+            if rag_context and rag_context.strip():
+                current_content += f"\n\n【项目知识库参考（含本地文档）】\n{rag_context}"
+                logger.info("editor/chat 成功召回 RAG 知识库内容 (project_id=%s)", body.project_id)
+        except Exception as e:
+            logger.warning("editor/chat RAG 检索异常: %s", str(e))
+
+    messages.append({"role": "user", "content": current_content})
+
+    # 3. 实例化 LLM 客户端（开启 streaming）
+    llm = ChatOpenAI(
+        api_key=settings.DEEPSEEK_API_KEY,
+        base_url=settings.DEEPSEEK_BASE_URL,
+        model=settings.DEEPSEEK_MODEL,
+        temperature=0.7 if body.chat_mode == "chat" else 0.3,
+        streaming=True,
+    )
+
+    async def event_generator():
+        try:
+            async for chunk in llm.astream(messages):
+                if chunk.content:
+                    data = json.dumps({"text": chunk.content}, ensure_ascii=False)
+                    yield f"event: content\ndata: {data}\n\n"
+
+            # 流结束标志
+            yield f"event: done\ndata: {json.dumps({'finish_reason': 'stop'})}\n\n"
+        except Exception as e:
+            logger.error("editor/chat 流式输出失败 | error=%s", str(e))
+            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            yield f"event: error\ndata: {error_data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -16,7 +16,7 @@ import asyncio
 from typing import Any
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +45,7 @@ from app.schemas import (
     SourcesListResponse,
     ProjectLogResponse,
     ProjectLogListResponse,
+    ExportPdfRequest,
 )
 from app.models.project_log import ProjectLog
 from app.tasks.report_workflow import (
@@ -60,6 +61,8 @@ from app.models.user import User
 from app.models.document_block import DocumentBlock
 from app.models.document import Document
 from app.models.base import orm_to_dict
+from app.rag.local_parser import parse_local_pdf
+from app.rag.vector_store import build_vector_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -360,6 +363,99 @@ async def review_sources(
         kept_sources=len(kept_sources),
         celery_task_id=celery_task.id,
     )
+
+
+# ================================================================
+# POST /api/v1/projects/{project_id}/upload-docs —— 本地上传 PDF 入库
+# ================================================================
+
+@router.post("/{project_id}/upload-docs")
+async def upload_local_docs(
+    project_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    上传本地 PDF 文件并打入项目知识库（Chroma + BM25）。
+
+    设计约束（严格遵守）：
+    - **绝不**修改 ProjectStatus，也**绝不**触发任何 Celery 任务。
+    - 用户上传文件后仍需通过 /review-sources 接口手动推进状态机。
+    - 所有本地解析文件的 source URL 统一使用 local://{filename} 格式。
+
+    状态约束：仅 PREPARING_DATA 或 WAITING_FOR_SOURCES 状态可上传。
+    """
+    # ── 1. 验证项目存在 ──────────────────────────────────────
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"项目 {project_id} 不存在",
+        )
+
+    # ── 2. 状态机守卫 ────────────────────────────────────────
+    if project.status not in (ProjectStatus.PREPARING_DATA, ProjectStatus.WAITING_FOR_SOURCES):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"当前项目状态为 '{project.status.value}'，"
+                "仅 'preparing_data' 或 'waiting_for_sources' 状态可上传文件。"
+            ),
+        )
+
+    # ── 3. 确保上传目录存在 ──────────────────────────────────
+    settings = get_settings()
+    upload_dir = os.path.join(settings.OUTPUT_DIR, "uploads", str(project_id))
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # ── 4. 保存上传文件到磁盘 ────────────────────────────────
+    file_path = os.path.join(upload_dir, file.filename)
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    logger.info("文件已保存 | project=%s | filename=%s | size=%d",
+                project_id, file.filename, len(content))
+
+    # ── 5. 解析 PDF → 切片 ──────────────────────────────────
+    try:
+        chunks = parse_local_pdf(file_path, file.filename)
+    except Exception as e:
+        logger.error("PDF 解析失败 | project=%s | file=%s | error=%s",
+                     project_id, file.filename, str(e))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"PDF 文件解析失败: {str(e)}",
+        )
+
+    if not chunks:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="PDF 文件解析后无有效文本内容（可能为纯图片 PDF）。",
+        )
+
+    # ── 6. 写入向量库 + BM25（追加模式，不覆盖已有数据） ────
+    try:
+        build_vector_store(chunks, project_id=str(project_id))
+    except Exception as e:
+        logger.error("向量库写入失败 | project=%s | error=%s", project_id, str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"知识库写入失败: {str(e)}",
+        )
+
+    logger.info("本地文件已入库 | project=%s | file=%s | chunks=%d",
+                project_id, file.filename, len(chunks))
+
+    # ── 7. 返回成功信息（不做任何 DB commit / 状态变更） ────
+    return {
+        "message": f"文件 '{file.filename}' 已成功上传并入库",
+        "chunk_count": len(chunks),
+        "project_id": str(project_id),
+    }
 
 
 # ================================================================
@@ -947,3 +1043,42 @@ async def delete_project(
     logger.info("项目已删除 | project=%s | topic=%s", project_id, project.topic)
 
     return MessageResponse(detail=f"项目 '{project.topic}' 已删除")
+
+
+# ================================================================
+# 🆕 POST /api/v1/projects/{project_id}/export-pdf —— 手动导出 PDF
+# ================================================================
+
+@router.post("/{project_id}/export-pdf", response_model=DownloadResponse)
+async def export_manual_pdf(
+    project_id: uuid.UUID,
+    body: ExportPdfRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    前端完成 Tiptap 编辑后，提交最终 HTML 内容请求后端渲染并生成 PDF 下载链接。
+
+    注意：此接口仅接收 HTML 字符串，生成 PDF 并更新 project.pdf_path 字段。
+    目前返回 Mock 数据供前端联调，真正的 markdown_to_pdf/html_to_pdf
+    接入逻辑留待 Task 4 (PDF排版引擎) 处理。
+    """
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # TODO: 等待 Task 4 将 body.html_content 交给 WeasyPrint 渲染
+    # mock_pdf_path = markdown_to_pdf(body.html_content)
+
+    # 目前返回 Mock 数据供前端调接口
+    mock_url = f"{get_settings().PDF_DOWNLOAD_BASE_URL}/mock_report.pdf"
+
+    return DownloadResponse(
+        project_id=project_id,
+        topic=project.topic,
+        download_url=mock_url,
+        filename="custom_report.pdf",
+        file_size_bytes=1024,
+        report_ready=True,
+    )

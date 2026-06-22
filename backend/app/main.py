@@ -14,13 +14,17 @@ import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-# ─── 确保 backend/ 目录在 sys.path 中（自包含包解析） ──────────
-# 当从项目根目录运行时 (uvicorn app.main:app)，Python 默认会找到
-# 项目根目录的 app/ 旧业务逻辑包。这里将 backend/ 也加入搜索路径，
-# 确保 app.shared 等新模块从 backend/app/ 优先加载。
+# ─── 确保 backend/ 和项目根目录均在 sys.path 中 ──────────
+# backend/ 优先（保证 app.core/app.models/app.schemas 等新模块优先加载），
+# 项目根目录次之（提供 app.rag/app.search/app.crawler 等旧业务逻辑包）。
+# 两者均需在 sys.path 中，因为：
+#   - 从 backend/ 运行时 CWD=backend/ → app=backend/app/（缺少 app.rag 等）
+#   - 从项目根运行时 CWD=project_root → app=project_root/app/（缺少 backend/app 新增模块）
 _backend_dir = Path(__file__).resolve().parent.parent
-if str(_backend_dir) not in sys.path:
-    sys.path.insert(0, str(_backend_dir))
+_project_root = _backend_dir.parent
+for _d in (str(_project_root), str(_backend_dir)):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
 
 # ─── Windows asyncio 兼容性修复 ─────────────────────────────────
 # 注意：WindowsSelectorEventLoopPolicy 在 Python 3.14+ 中已弃用，

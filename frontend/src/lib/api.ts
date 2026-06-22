@@ -21,6 +21,9 @@ import type {
   ReportContentResponse,
   EditorReviseRequest,
   EditorReviseResponse,
+  EditorChatRequest,
+  ExportPdfRequest,
+  UploadDocsResponse,
 } from '@/types/api'
 
 const API_BASE = '/api/v1'
@@ -148,6 +151,51 @@ export const projectsApi = {
       method: 'DELETE',
     })
   },
+
+  /** 🆕 上传本地参考文档 (PDF/DOCX/TXT)，逐个上传 */
+  async uploadDocs(projectId: string, files: FileList | File[]): Promise<UploadDocsResponse> {
+    let totalChunks = 0
+    const messages: string[] = []
+
+    for (let i = 0; i < files.length; i++) {
+      const formData = new FormData()
+      formData.append('file', files[i])
+
+      const res = await fetch(`${API_BASE}/projects/${projectId}/upload-docs`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const body = await res.json()
+          detail = body.detail ?? detail
+        } catch { /* ignore */ }
+        throw new ApiError(res.status, `[${files[i].name}] ${detail}`)
+      }
+
+      const result: UploadDocsResponse = await res.json()
+      totalChunks += result.chunk_count
+      messages.push(result.message)
+    }
+
+    return {
+      project_id: projectId,
+      chunk_count: totalChunks,
+      message: messages.length === 1
+        ? messages[0]
+        : `${messages.length} 个文件上传完成`,
+    }
+  },
+
+  /** 🆕 手动导出 PDF (前端拼接 HTML/Markdown 内容) */
+  exportPdf(projectId: string, data: ExportPdfRequest): Promise<DownloadResponse> {
+    return request(`/projects/${projectId}/export-pdf`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
 }
 
 /**
@@ -181,5 +229,28 @@ export const editorApi = {
       method: 'POST',
       body: JSON.stringify(data),
     })
+  },
+
+  /**
+   * 🆕 侧边栏 AI 对话（SSE 流式输出）
+   *
+   * 返回原始 fetch Response，调用方通过 ReadableStream 读取 SSE 事件。
+   * 事件类型：content（增量文本）、done（完成）、error（错误）
+   */
+  async chat(data: EditorChatRequest): Promise<Response> {
+    const res = await fetch(`${API_BASE}/editor/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try {
+        const body = await res.json()
+        detail = body.detail ?? detail
+      } catch { /* ignore */ }
+      throw new ApiError(res.status, detail)
+    }
+    return res
   },
 }

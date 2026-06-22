@@ -70,7 +70,7 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
         # 设置 API Key
         os.environ["TAVILY_API_KEY"] = settings.TAVILY_API_KEY
 
-        search_results = tavily_search(topic, max_results=5)
+        search_results = tavily_search(topic, max_results=15)
         results = search_results.get("results", [])
         logger.info("[TASK] Tavily 搜索完成，返回 %d 条结果", len(results))
     except Exception as e:
@@ -78,13 +78,13 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
         # 搜索失败时应重试
         raise self.retry(exc=e)
 
-    # ─── 3. Firecrawl 爬取前 3 个 URL ─────────────────────────
+    # ─── 3. Firecrawl 爬取前 10 个 URL ─────────────────────────
     from app.crawler.firecrawl_crawler import crawl_url
 
     os.environ["FIRECRAWL_API_KEY"] = settings.FIRECRAWL_API_KEY
 
     crawled_data = []
-    for item in results[:3]:
+    for item in results[:10]:
         url = item.get("url", "")
         if not url:
             continue

@@ -1,2 +1,5 @@
 # 停止项目
 bash /mnt/d/DEV/agents/QX_product_agent/stop_all.sh
+
+# 环境
+source /home/administrator/dev/agents/QX_product_agent/venv/bin/activate

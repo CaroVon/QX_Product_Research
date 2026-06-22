@@ -1,15 +1,16 @@
 # 🔬 QX Product Research Agent
 
-> **v0.1** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从信息搜集、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供三栏式交互工作台。
+> **v0.2** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供三栏式交互工作台 + SSE 实时聊天。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136-green.svg)](https://fastapi.tiangolo.com/)
 [![Celery](https://img.shields.io/badge/Celery-5.6-purple.svg)](https://docs.celeryq.dev/)
 [![React](https://img.shields.io/badge/React-18.3-blue.svg)](https://react.dev/)
-[![Vite](https://img.shields.io/badge/Vite-6.4-yellow.svg)](https://vitejs.dev/)
-[![Redis](https://img.shields.io/badge/Redis-8.0-red.svg)](https://redis.io/)
+[![Vite](https://img.shields.io/badge/Vite-6.0-yellow.svg)](https://vitejs.dev/)
+[![Redis](https://img.shields.io/badge/Redis-7.0-red.svg)](https://redis.io/)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-orange.svg)](https://www.sqlalchemy.org/)
 [![LangChain](https://img.shields.io/badge/LangChain-1.4-teal.svg)](https://www.langchain.com/)
+[![Chroma](https://img.shields.io/badge/Chroma-1.5-purple.svg)](https://www.trychroma.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -17,6 +18,13 @@
 ## 📖 定位与愿景
 
 将传统的 **"输入主题 → 黑盒等待 → 静态输出"** 线性产品分析工具，升级为具备 **断点干预、块级编辑、多轮迭代** 能力的现代 SaaS 产品研究工作台。
+
+**v0.2 亮点更新：**
+- 🤖 **AI 聊天面板** — SSE 流式对话，支持 Work/Chat 双模式，带 RAG 知识库检索
+- 📎 **本地上传文档** — 支持 PDF/DOCX/TXT 上传并自动解析入库
+- 📄 **手动导出 PDF** — 任意阶段导出编辑器内容为 PDF
+- 🖼️ **图片搜索引擎** — 基于 DuckDuckGo 的免 API Key 图片搜索
+- 📋 **报告模板选择** — 标准/竞品/投资三种报告视角
 
 **目标用户：** 资深产品经理 (PM)、用户体验专家 (UX)、工业设计战略家。
 
@@ -27,19 +35,20 @@
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                     Frontend  (React 18 + Vite + TypeScript)       │
-│               三栏工作台 · Tiptap 编辑器 · SSE 流式渲染              │
+│        三栏工作台 · Tiptap 编辑器 · SSE 流式渲染 · AI 对话面板       │
 │                         http://localhost:5173                       │
 └────────────────────────────┬───────────────────────────────────────┘
-                             │  HTTP REST + SSE
+                             │  HTTP REST + SSE (POST & GET)
 ┌────────────────────────────▼───────────────────────────────────────┐
 │                   Backend  (FastAPI + Celery + SQLAlchemy 2.0)     │
 │             状态机编排 · 异步任务队列 · REST API · 持久化存储         │
 │                         http://localhost:8000                       │
 └────────────────────────────┬───────────────────────────────────────┘
-                             │  Python import (同步引擎)
+                             │  Python import (同步引擎 + 本地解析)
 ┌────────────────────────────▼───────────────────────────────────────┐
 │                  Research Engine  (app/)                            │
-│   搜索(Tavily) → 抓取(Firecrawl) → 向量库(Chroma) → 混合检索(BM25)  │
+│   搜索(Tavily) → 抓取(Firecrawl) → 本地解析(PyMuPDF)               │
+│   → 向量库(Chroma) → 混合检索(BM25+RRF) → 图片搜索(DuckDuckGo)     │
 │   → 大纲规划 → RAG 深度撰写(DeepSeek) → 16:9横版PPT PDF(WeasyPrint) │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -48,9 +57,9 @@
 
 | 组件 | 技术栈 | 说明 |
 |------|--------|------|
-| **🧠 研究引擎** `app/` | LangChain + Chroma + BM25 + DeepSeek | 核心 RAG 管道：搜索→抓取→切片→向量化→混合检索→大纲→撰写→PDF |
-| **⚙️ 后端服务** `backend/` | FastAPI + Celery + SQLite/PostgreSQL | REST API + 异步任务队列 + 状态机编排 + 数据持久化 |
-| **🎨 前端界面** `frontend/` | React 18 + Vite + TypeScript + Tailwind CSS | 三栏式交互工作台 + Tiptap 块编辑器 + SSE 实时流 |
+| **🧠 研究引擎** `app/` | LangChain + Chroma + BM25 + PyMuPDF + DuckDuckGo + DeepSeek | 核心 RAG 管道：搜索→抓取→本地解析→切片→向量化→混合检索→大纲→撰写→PDF |
+| **⚙️ 后端服务** `backend/` | FastAPI + Celery + SQLite/PostgreSQL | REST API + 异步任务队列 + SSE 实时对话 + 状态机编排 + 数据持久化 |
+| **🎨 前端界面** `frontend/` | React 18 + Vite + TypeScript + Tailwind CSS + Radix UI | 三栏式交互工作台 + Tiptap 块编辑器 + SSE 实时流 + AI 对话 |
 
 ---
 
@@ -64,13 +73,13 @@
                          ▼
               ┌─────────────────────┐
               │   PREPARING_DATA    │  Celery: 网络搜索 + Firecrawl 深度抓取
-              └────────┬────────────┘
+              └────────┬────────────┘       + 支持本地上传文档 (upload-docs)
                        │ (自动完成)
                        ▼
               ┌─────────────────────┐
               │  WAITING_FOR_SOURCES │  🛑 交互节点 1：用户审核资料
               └────────┬────────────┘       GET /sources → POST /review-sources
-                       │ (用户确认筛选结果)
+                       │ (用户确认筛选结果)     📎 POST /upload-docs 追加本地文件
                        ▼
               ┌─────────────────────┐
               │  PREPARING_OUTLINE  │  Celery: 知识库构建(Chroma+BM25) + LLM 大纲生成
@@ -83,8 +92,8 @@
                        │ (用户确认大纲)
                        ▼
               ┌─────────────────────┐
-              │      DRAFTING       │  Celery: RAG 逐章撰写 + Markdown 组装 + PDF 渲染
-              └────────┬────────────┘
+              │      DRAFTING       │  Celery: RAG 逐章撰写 + SSE 流式推送
+              └────────┬────────────┘       + 手动导出 PDF (export-pdf)
                        │ (自动完成)
                        ▼
               ┌─────────────────────┐
@@ -105,7 +114,9 @@
 | 步骤 | 组件 | 说明 |
 |------|------|------|
 | 🔍 全网搜索 | **Tavily Search API** | 输入主题，返回高相关性网页列表及摘要 |
+| 🖼️ 图片搜索 | **DuckDuckGo Images** | 免 API Key，返回产品相关图片直链 |
 | 🕷️ 深度抓取 | **Firecrawl** | 将网页转为结构化 Markdown，保留标题、正文、链接 |
+| 📎 本地解析 | **PyMuPDF (fitz)** | 解析本地上传的 PDF 文件，提取全文文本 |
 | ✂️ 文本切片 | `app/rag/chunker.py` | 1200 字符块 + 200 字符重叠，保持语义连贯 |
 | 📊 向量嵌入 | `BAAI/bge-small-zh-v1.5` | 中文优化嵌入模型，SentenceTransformers 本地加载 |
 
@@ -175,6 +186,7 @@
 |------|------|------|
 | `GET` | `/api/v1/projects/{id}/sources` | 🛑 **节点1**: 获取资料列表，供用户审核 |
 | `POST` | `/api/v1/projects/{id}/review-sources` | 🛑 **节点1确认**: 提交筛选后的资料 URL |
+| `POST` | `/api/v1/projects/{id}/upload-docs` | 📎 上传本地参考文件 (PDF/DOCX/TXT) 并入库 |
 | `POST` | `/api/v1/projects/{id}/approve-outline` | 🛑 **节点2**: 提交确认的大纲 (可包含用户修改) |
 
 ### 内容与交付
@@ -184,14 +196,17 @@
 | `GET` | `/api/v1/projects/{id}/blocks` | 获取文档块列表 (Tiptap 编辑器加载) |
 | `GET` | `/api/v1/projects/{id}/content` | 获取报告全文 (含引用溯源数据) |
 | `GET` | `/api/v1/projects/{id}/stream-draft` | 🌊 SSE 流式草稿输出 (逐块推送) |
-| `GET` | `/api/v1/projects/{id}/download` | 获取 PDF 下载链接 |
+| `POST` | `/api/v1/projects/{id}/export-pdf` | 📄 手动导出 PDF (前端编辑器内容) |
+| `GET` | `/api/v1/projects/{id}/download` | 获取自动生成的 PDF 下载链接 |
 | `GET` | `/api/v1/projects/{id}/logs` | 获取终端风格实时运行日志 |
 
-### Inline AI 编辑器
+### AI 编辑器服务
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/v1/editor/revise` | 划词改写 (expand/simplify/polish/add-competitors) |
+| `POST` | `/api/v1/editor/revise` | 划词改写 (扩写/精简/润色/补充竞品/正式化) |
+| `POST` | `/api/v1/editor/revise-block/{id}` | 块级精准改写 (基于 DocumentBlock 上下文) |
+| `POST` | `/api/v1/editor/chat` | 🤖 SSE 流式 AI 对话 (支持 work/chat 双模式 + RAG) |
 
 ---
 
@@ -201,14 +216,17 @@
 QX_product_agent/
 │
 ├── app/                              # 🧠 核心研究引擎 (独立可运行)
-│   ├── search/tavily_search.py       #   Tavily 全网搜索
+│   ├── search/
+│   │   ├── tavily_search.py          #   Tavily 全网搜索
+│   │   └── image_search.py           #   🆕 DuckDuckGo 图片搜索
 │   ├── crawler/firecrawl_crawler.py  #   Firecrawl 网页转 Markdown
 │   ├── rag/                          #   检索增强生成管道
 │   │   ├── chunker.py                #     文本切片 (1200/200)
 │   │   ├── vector_store.py           #     Chroma 持久化向量库
 │   │   ├── retriever.py              #     混合检索 + RRF 融合
 │   │   ├── rag_pipeline.py           #     知识库构建编排
-│   │   └── citation_utils.py         #     引用编号与溯源
+│   │   ├── citation_utils.py         #     引用编号与溯源
+│   │   └── local_parser.py           #     🆕 本地 PDF 解析 (PyMuPDF)
 │   ├── planner/                      #   大纲规划
 │   │   ├── outline_generator.py      #     LLM 大纲生成
 │   │   ├── query_planner.py          #     查询规划
@@ -225,7 +243,7 @@ QX_product_agent/
 │
 ├── backend/                          # ⚙️ FastAPI 后端服务
 │   ├── app/
-│   │   ├── main.py                   #   FastAPI 应用工厂 (lifespan/CORS/SPA)
+│   │   ├── main.py                   #   FastAPI 应用工厂 (lifespan/CORS/SPA/SSE)
 │   │   ├── core/
 │   │   │   ├── config.py             #     Pydantic V2 配置中心 (多源 .env)
 │   │   │   ├── database.py           #     异步 SQLAlchemy 引擎 (SQLite/PostgreSQL)
@@ -234,8 +252,8 @@ QX_product_agent/
 │   │   ├── api/v1/
 │   │   │   ├── router.py             #     路由聚合器
 │   │   │   └── endpoints/
-│   │   │       ├── projects.py       #     核心业务 API (~950 行)
-│   │   │       └── editor.py         #     Inline AI 编辑器
+│   │   │       ├── projects.py       #     核心业务 API (含 upload-docs / export-pdf)
+│   │   │       └── editor.py         #     AI 编辑器 (revise / revise-block / chat SSE)
 │   │   ├── models/                   #   SQLAlchemy ORM 模型
 │   │   │   ├── base.py               #     声明式基类 + orm_to_dict + UUID
 │   │   │   ├── project.py            #     项目 + 状态机枚举
@@ -244,17 +262,16 @@ QX_product_agent/
 │   │   │   ├── document.py           #     完整章节文档
 │   │   │   ├── project_log.py        #     终端风格时间轴日志
 │   │   │   └── user.py               #     用户模型
-│   │   ├── schemas/                  #   Pydantic 请求/响应模型
+│   │   ├── schemas/__init__.py       #   Pydantic 请求/响应模型 (含 Chat/Upload/Export)
 │   │   ├── tasks/                    #   Celery 异步任务
 │   │   │   ├── report_workflow.py    #     ★ 三阶段状态机编排器
 │   │   │   ├── search_tasks.py       #     搜索+抓取任务
 │   │   │   ├── knowledge_tasks.py    #     知识库构建任务
 │   │   │   ├── writing_tasks.py      #     大纲生成+章节撰写任务
 │   │   │   └── render_tasks.py       #     Markdown组装+PDF渲染任务
-│   │   ├── repositories/             #   数据仓库 (依赖倒置)
-│   │   │   └── project_repo.py       #     Celery Worker 同步数据库访问层
-│   │   ├── schemas/__init__.py       #   API 数据契约
-│   │   └── shared/outline_parser.py  #   大纲解析器 (唯一实现)
+│   │   └── repositories/             #   数据仓库 (依赖倒置)
+│   │       └── project_repo.py       #     Celery Worker 同步数据库访问层
+│   ├── fix_stuck_projects.py         #   异常项目修复脚本
 │   ├── alembic/                      #   数据库迁移脚本
 │   ├── .env.example                  #   配置模板
 │   └── local_dev.db                  #   SQLite 开发数据库
@@ -263,24 +280,26 @@ QX_product_agent/
 │   └── src/
 │       ├── pages/                    #   页面组件
 │       │   ├── DashboardPage.tsx     #     项目列表仪表盘
-│       │   ├── WorkspacePage.tsx     #     ★ 三栏工作台 (核心)
+│       │   ├── WorkspacePage.tsx     #     ★ 三栏工作台 (核心, ~1287行)
 │       │   ├── ReportPage.tsx        #     报告阅读器
 │       │   └── ProgressPage.tsx      #     进度详情页
 │       ├── components/               #   可复用组件
 │       │   ├── layout/               #     布局: Sidebar / ThreePaneLayout
 │       │   ├── projects/             #     项目: CreateProjectModal / SourcesReview
-│       │   │                         #           OutlineApproval / TerminalTimeline
+│       │   │                         #           OutlineApproval / ProgressTracker
+│       │   │                         #           TerminalTimeline / ProjectCard
 │       │   ├── editor/               #     编辑器: BlockEditor / InlineAIBubble / DiffView
 │       │   │   └── extensions/       #       Tiptap 扩展: Citation 标注
 │       │   ├── report/               #     报告: CitationMarkdown
-│       │   └── common/               #     基础组件 (Button/Dialog/Input/…)
+│       │   └── common/               #     基础组件 (Button/Dialog/Popover/Input/Badge)
 │       ├── hooks/                    #   React Query hooks
 │       │   ├── useProjectStatus.ts   #     状态感知轮询 (自动暂停)
 │       │   ├── useDraftStream.ts     #     SSE 流式接收
 │       │   ├── useEditorSync.ts      #     编辑器同步
-│       │   └── useProjectLogs.ts     #     增量日志拉取
-│       ├── lib/api.ts                #   API 服务层 (Axios)
-│       ├── types/api.ts              #   TypeScript 类型定义
+│       │   ├── useProjectLogs.ts     #     增量日志拉取
+│       │   └── useCitationStore.ts   #     引用溯源状态
+│       ├── lib/api.ts                #   API 服务层 (fetch 封装, SSE chat 支持)
+│       ├── types/api.ts              #   TypeScript 类型定义 (含 Chat/Upload/Export)
 │       └── styles/globals.css        #   Tailwind CSS 全局样式
 │
 ├── tests/                            # 测试与评测
@@ -290,12 +309,13 @@ QX_product_agent/
 │   └── eval_citation.py              #   引用溯源评测
 │
 ├── memory/                           # Claude Code 持久记忆
-├── fix/                              # 辅助修复脚本
+├── fix/                              # 问题修复记录
 ├── start_all.sh                      # WSL/Linux 全模块一键启动
 ├── start_project.bat                 # Windows 一键启动入口
 ├── stop_all.sh                       # 全模块停止
 ├── requirements.txt                  # Python 依赖清单
 ├── prd.md                            # 产品需求文档
+├── command.txt                       # 快速启动命令备忘
 └── PROJECT_STRUCTURE.md              # 详细脚本架构文档
 ```
 
@@ -309,7 +329,7 @@ QX_product_agent/
 |------|----------|
 | Python | 3.10+ |
 | Node.js | 18+ |
-| Redis | 推荐 8.0+ (Docker 部署) |
+| Redis | 推荐 7.0+ (Docker 部署) |
 | Git | 2.0+ |
 
 ### 1. 克隆项目
@@ -374,7 +394,7 @@ redis-server
 bash start_all.sh
 ```
 
-脚本自动完成：Redis 保活 → FastAPI (8000) → Celery Worker → Vite 前端 (5173)，日志输出到各自日志文件。
+脚本自动完成：Redis 保活 → FastAPI (8000) → Celery Worker → Vite 构建，日志输出到各自日志文件。
 
 ### 6. 手动启动 (分步调试)
 
@@ -384,9 +404,10 @@ cd backend
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 # 终端2: Celery Worker (Windows 必须用线程池)
+cd backend
 celery -A app.core.celery_app.celery_app worker --loglevel=info --concurrency=4 --pool=threads
 
-# 终端3: Vite 前端
+# 终端3: Vite 前端开发服务器 (端口 5173, HMR 热更新)
 cd frontend && npm run dev
 ```
 
@@ -394,11 +415,14 @@ cd frontend && npm run dev
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| **前端工作台** | **http://localhost:8000** | 三栏交互界面 |
+| **前端工作台 (开发)** | **http://localhost:5173** | Vite HMR 热更新, 代理 API 到 8000 |
+| **前端工作台 (生产)** | **http://localhost:8000** | FastAPI 托管 `vite build` 静态产物 |
 | API 文档 (Swagger) | http://localhost:8000/docs | OpenAPI 交互文档 |
 | API 文档 (ReDoc) | http://localhost:8000/redoc | 备选文档样式 |
 | 健康检查 | http://localhost:8000/health | 服务存活检测 |
 | 数据库健康检查 | http://localhost:8000/health/db | 数据库连接 + 表列表 |
+
+> 💡 **开发建议**: 使用 5173 端口进行前端开发，Vite 自动检测文件变更并热更新；8000 端口用于后端 API 和 Swagger 文档调试。
 
 ---
 
@@ -409,13 +433,17 @@ cd frontend && npm run dev
 | **Celery `--pool=threads`** | Python 3.14 `spawn` 多进程导致 `trace._localized` 解包崩溃，Windows 强制线程池 |
 | **SQLite NullPool + WAL 模式** | 单文件开发库零配置；WAL 提升并发读写；NullPool 避免连接池冲突 |
 | **Chroma + BM25 双引擎** | 向量检索覆盖语义近似，BM25 覆盖关键词精确匹配，RRF 融合无需调参 |
-| **SSE 轮询 (非 WebSocket)** | 简化部署（无额外 WS 服务器），2 秒间隔可接受的延迟 |
+| **SSE (非 WebSocket)** | 简化部署（无额外 WS 服务器），支持草稿流和对话流两种场景 |
+| **SSE via POST** | AI 对话使用 POST 携带完整请求体 (project_id, history, chat_mode)，优于 GET+URL 编码 |
 | **状态感知轮询停止** | 交互节点/终态自动停轮询，避免不必要的网络请求 |
 | **`orm_to_dict()` 手动转换** | 避免 Pydantic `from_attributes=True` 的嵌套序列化陷阱 |
 | **16:9 横版 PDF** | WeasyPrint CSS `@page size: 1440px 810px` 精确控制，符合商业汇报标准 |
 | **Redis Docker 容器化** | 避免 WSL sudo 权限问题，`--restart unless-stopped` 自动保活 |
 | **大纲解析器单一实现** | `app/shared/outline_parser.py` 消除 CLI/API/Celery 三处重复代码 |
 | **ProjectRepo 依赖倒置** | Celery Worker 使用同步引擎的独立仓库层，消除散落的 raw SQL |
+| **DuckDuckGo 图片搜索** | 免 API Key，降低第三方依赖成本；与 Tavily 搜索互补 |
+| **本地上传 + 远程搜索双通道** | 用户既可依赖全自动搜索，也可上传自有 PDF 参考文档 |
+| **Flux 架构: Dispatch → Action → Store → View** | 前端状态管理遵循单向数据流，useProjectStatus 为中央 Dispatch |
 
 ---
 
@@ -444,9 +472,9 @@ rm -rf chroma_db/ bm25_db/
 
 ```bash
 # 各模块日志文件
-tail -f backend/api.log        # FastAPI
-tail -f backend/celery.log     # Celery Worker
-tail -f frontend/vite.log      # Vite Dev Server
+tail -f backend/runtime/api.log        # FastAPI
+tail -f backend/runtime/celery.log     # Celery Worker
+tail -f backend/runtime/vite_build.log # Vite 构建
 ```
 
 ---
@@ -487,7 +515,7 @@ cd frontend && npx tsc --noEmit
 - **Document** — 完整章节，含引用 URL 映射 JSON
 - **DocumentBlock** — Tiptap 编辑器的原子化块，每个段落独立存储
 - **ProjectLog** — 终端控制台风格的时间轴日志，支持增量拉取
-- **Task** — 7 种子任务类型（SEARCH → KNOWLEDGE_BASE → OUTLINE → WRITE_SECTION → BUILD_REPORT → PDF），追踪每步状态
+- **Task** — 7 种子任务类型（SEARCH → KNOWLEDGE_BASE → OUTLINE → WRITE_SECTION → IMAGE_GENERATION → BUILD_REPORT → PDF），追踪每步状态
 
 ---
 
@@ -496,18 +524,23 @@ cd frontend && npx tsc --noEmit
 | 能力 | 实现 | 说明 |
 |------|------|------|
 | 🔍 自动信息搜集 | Tavily Search API | 全网搜索最新行业资讯 |
+| 🖼️ 图片搜索 | DuckDuckGo Images | 免 API Key，产品概念图搜索 |
 | 🕷️ 网页深度抓取 | Firecrawl | 网页转结构化 Markdown |
+| 📎 本地上传文档 | PyMuPDF + upload-docs API | PDF 解析切片，打入知识库 |
 | 📚 双引擎知识库 | Chroma + BM25 + RRF | 语义 + 关键词混合召回 |
 | 🧠 AI 深度撰写 | DeepSeek Chat | 基于检索资料生成专业研报 |
+| 🤖 AI 对话面板 | SSE Chat + RAG | Work/Chat 双模式，流式打字机效果 |
 | 📎 学术级引用溯源 | `citation_utils.py` | 自动编号 + `[^n]` 角标 + 参考资料章节 |
 | 🎯 信息源分级 | 领域权威 > 行业媒体 > UGC | 自动加权排序 |
 | 🎨 多模态概念图 | 硅基流动 FLUX.1 | AI 生成产品概念设计图 |
 | 📄 横版 PPT PDF | WeasyPrint 1440×810px | 16:9 宽屏，商业汇报标准 |
+| 📄 手动导出 PDF | export-pdf API | 从编辑器内容导出，drafting 阶段即可用 |
 | 🖥️ 实时运行日志 | ProjectLog 时间轴 | 终端控制台风格，增量拉取 |
 | 🔄 交互式状态机 | 三阶段六状态 | 两处断点：资料审核 + 大纲确认 |
-| 🌐 三栏式工作台 | React + Tiptap | 大纲导航 + 块编辑器 + 日志/溯源面板 |
+| 🌐 三栏式工作台 | React + Tiptap | 大纲导航 + 块编辑器 + 日志/溯源/对话面板 |
 | ✨ Inline AI | BubbleMenu | 划词改写: 润色/扩写/精简/正式化 |
-| 📡 SSE 流式输出 | Server-Sent Events | 逐块推送草稿，前端实时渲染 |
+| 📡 SSE 流式输出 | Server-Sent Events | 逐块推送草稿 + 实时对话 |
+| 📋 报告模板选择 | TemplatePopover | 标准/竞品/投资三种分析视角 |
 | 🗑️ 项目管理 | 级联删除 | 删除项目及所有关联数据 |
 
 ---

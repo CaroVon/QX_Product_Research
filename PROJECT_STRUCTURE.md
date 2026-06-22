@@ -1,6 +1,6 @@
 # QX Product Research Agent — 项目脚本架构文档
 
-> **版本**: v0.1 | **更新**: 2026-06-18
+> **版本**: v0.2 | **更新**: 2026-06-22
 >
 > 本文档描述项目的完整脚本结构、每段脚本的核心代码片段及其在系统中的作用。
 
@@ -9,13 +9,16 @@
 ## 目录
 
 1. [总览：三层架构](#1-总览三层架构)
-2. [启动与运维脚本](#2-启动与运维脚本)
-3. [后端应用层 (backend/app/)](#3-后端应用层-backendapp)
-4. [异步任务引擎 (backend/app/tasks/)](#4-异步任务引擎-backendapptasks)
-5. [研究引擎 (app/)](#5-研究引擎-app)
-6. [前端架构 (frontend/src/)](#6-前端架构-frontendsrc)
-7. [数据模型 (backend/app/models/)](#7-数据模型-backendappmodels)
-8. [状态机流转全景](#8-状态机流转全景)
+2. [根目录文件一览](#2-根目录文件一览)
+3. [启动与运维脚本](#3-启动与运维脚本)
+4. [后端应用层 (backend/app/)](#4-后端应用层-backendapp)
+5. [异步任务引擎 (backend/app/tasks/)](#5-异步任务引擎-backendapptasks)
+6. [数据仓库层 (backend/app/repositories/)](#6-数据仓库层-backendapprepositories)
+7. [研究引擎 (app/)](#7-研究引擎-app)
+8. [前端架构 (frontend/src/)](#8-前端架构-frontendsrc)
+9. [数据模型 (backend/app/models/)](#9-数据模型-backendappmodels)
+10. [状态机流转全景](#10-状态机流转全景)
+11. [测试与评测](#11-测试与评测)
 
 ---
 
@@ -36,15 +39,43 @@
                        │ Python import
 ┌──────────────────────▼──────────────────────────────────┐
 │              Research Engine (app/)                      │
-│    搜索 → 抓取 → 向量库 → RAG 检索 → 大纲 → 撰写 → PDF  │
+│  搜索→抓取→切片→向量库+BM25→RAG检索→大纲→撰写→PDF       │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. 启动与运维脚本
+## 2. 根目录文件一览
 
-### 2.1 `start_all.sh` — 全模块一键启动 (WSL)
+```
+QX_product_agent/
+├── .claude/                    # Claude Code 配置（hooks / settings）
+├── .gitignore
+├── README.md                   # 项目 README
+├── PROJECT_STRUCTURE.md        # 本文档
+├── prd.md                      # 产品需求文档 (PRD)
+├── requirements.txt            # Python 依赖清单
+├── command.txt                 # 快速启动命令备忘
+├── test_llm.py                 # LLM 连通性测试脚本
+│
+├── start_all.sh                # WSL 全模块一键启动
+├── stop_all.sh                 # WSL 全模块停止
+├── start_project.bat           # Windows 桌面入口（双击→WSL）
+│
+├── app/                        # 研究引擎（算法核心）
+├── backend/                    # FastAPI 后端 + Celery 任务队列
+├── frontend/                   # React + Vite 前端
+├── tests/                      # 评测脚本（检索/排序/引用质量）
+├── fix/                        # 问题修复记录
+├── memory/                     # Claude Code 持久记忆
+└── venv/                       # Python 虚拟环境
+```
+
+---
+
+## 3. 启动与运维脚本
+
+### 3.1 `start_all.sh` — 全模块一键启动 (WSL)
 
 **作用**: 依次检测并启动 Redis、Python venv、FastAPI、Celery Worker、Vite 前端。
 
@@ -60,9 +91,9 @@ fi
 OLD_PID=$(ss -tlnp | grep ':8000' | grep -oP 'pid=\K[0-9]+' | head -1)
 [ -n "$OLD_PID" ] && kill "$OLD_PID"
 
-# 核心片段：启动 FastAPI（后台 + 日志重定向）
-nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload \
-    > backend/api.log 2>&1 &
+# 核心片段：启动 FastAPI（后台 + 日志重定向，稳定模式 / 无 --reload）
+nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    > "$RUNTIME_DIR/api.log" 2>&1 &
 
 # 核心片段：启动 Celery（Windows 线程池模式，避免 spawn 崩溃）
 nohup celery -A app.core.celery_app.celery_app worker \
@@ -79,7 +110,7 @@ for i in $(seq 1 60); do
 done
 ```
 
-### 2.2 `stop_all.sh` — 全模块停止
+### 3.2 `stop_all.sh` — 全模块停止
 
 ```bash
 # 核心片段：按端口精准杀进程
@@ -90,7 +121,7 @@ PID=$(ss -tlnp | grep ':5173' | grep -oP 'pid=\K[0-9]+' | head -1)
 [ -n "$PID" ] && kill "$PID"
 ```
 
-### 2.3 `start_project.bat` — Windows 入口
+### 3.3 `start_project.bat` — Windows 入口
 
 ```batch
 @echo off
@@ -102,19 +133,30 @@ pause
 
 **设计意图**: Windows 用户双击 bat → 内部委托 WSL 执行 bash 脚本。所有环境（Python、Node、Redis）均在 WSL 内运行，数据统一落在 D 盘。
 
+### 3.4 `test_llm.py` — LLM 连通性快速验证
+
+用于验证 DeepSeek API Key 配置是否正确、模型是否可达的小型诊断脚本。
+
 ---
 
-## 3. 后端应用层 (backend/app/)
+## 4. 后端应用层 (backend/app/)
 
-### 3.1 `backend/app/main.py` — FastAPI 应用工厂
+### 4.1 `backend/app/main.py` — FastAPI 应用工厂
 
 这是整个后端的**唯一入口**。
 
 ```python
-# 核心片段：sys.path 修正 —— 确保 backend/app/ 优先加载
+# 核心片段：双路径注入 —— 同时加入 backend/ 和项目根目录
+# backend/ 优先（app.core/app.models/app.schemas 等新模块），
+# 项目根目录次之（app.rag/app.search/app.crawler 等研究引擎）。
+# 两者缺一不可：从 backend/ 启动时 CWD=backend/ 找不到 app.rag；
+# 从项目根启动时 CWD=project_root 找不到 backend/app 新增模块。
 _backend_dir = Path(__file__).resolve().parent.parent
-if str(_backend_dir) not in sys.path:
-    sys.path.insert(0, str(_backend_dir))
+_project_root = _backend_dir.parent
+for _d in (str(_project_root), str(_backend_dir)):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+# 结果：sys.path[0] = backend/（优先），sys.path[1] = 项目根目录
 
 # 核心片段：Windows asyncio 兼容（Python 3.14+ 自动适配）
 if sys.platform == "win32" and sys.version_info < (3, 14):
@@ -136,7 +178,7 @@ app.include_router(v1_router, prefix="/api/v1")
 app.mount("/outputs", StaticFiles(directory=settings.OUTPUT_DIR))
 ```
 
-### 3.2 `backend/app/core/config.py` — 配置中心
+### 4.2 `backend/app/core/config.py` — 配置中心
 
 **作用**: Pydantic V2 Settings 单例，从 `.env` 自动加载所有配置项，启动时校验关键 API Key。
 
@@ -166,7 +208,9 @@ def validate_critical_config(self):
         raise ValueError(f"❌ 关键 API Key 未配置：\n  • {'  • '.join(missing)}")
 ```
 
-### 3.3 `backend/app/core/database.py` — 异步数据库引擎
+配置项涵盖：数据库 URL、Redis/Celery broker、DeepSeek API、Tavily Search、Firecrawl、Embedding 模型路径、Chroma/BM25 持久化目录、输出目录等。
+
+### 4.3 `backend/app/core/database.py` — 异步数据库引擎
 
 **作用**: 创建 SQLAlchemy 2.0 异步引擎，SQLite 与 PostgreSQL 双模式。
 
@@ -195,7 +239,7 @@ async def get_db() -> AsyncSession:
             raise
 ```
 
-### 3.4 `backend/app/core/celery_app.py` — Celery 应用实例
+### 4.4 `backend/app/core/celery_app.py` — Celery 应用实例
 
 ```python
 # 核心片段：配置 Redis broker + 结果后端
@@ -221,7 +265,7 @@ celery_app.autodiscover_tasks([
 
 > **关键设计**: `--pool=threads` 是 Windows 必需参数。Python 3.14 的 `spawn` 多进程模式会导致 `trace._localized` 解包崩溃。
 
-### 3.5 `backend/app/core/celery_db.py` — Celery Worker 数据库层
+### 4.5 `backend/app/core/celery_db.py` — Celery Worker 数据库层
 
 ```python
 # 核心片段：提供同步引擎（Celery worker 在同步上下文中运行）
@@ -234,7 +278,7 @@ def get_crawled_data_path(project_id: str) -> str:
     return os.path.join(settings.OUTPUT_DIR, f"crawled_data_{project_id}.json")
 ```
 
-### 3.6 `backend/app/api/v1/router.py` — 路由聚合
+### 4.6 `backend/app/api/v1/router.py` — 路由聚合
 
 ```python
 router = APIRouter()
@@ -242,7 +286,7 @@ router.include_router(projects.router)   # /api/v1/projects
 router.include_router(editor.router)     # /api/v1/editor
 ```
 
-### 3.7 `backend/app/api/v1/endpoints/projects.py` — 核心业务 API（约 950 行）
+### 4.7 `backend/app/api/v1/endpoints/projects.py` — 核心业务 API（约 950 行）
 
 **状态机三节点**的 REST 实现：
 
@@ -298,7 +342,9 @@ async def stream_draft(project_id, db):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 ```
 
-### 3.8 `backend/app/api/v1/endpoints/editor.py` — Inline AI 编辑器
+### 4.8 `backend/app/api/v1/endpoints/editor.py` — Inline AI 编辑器 + 侧边栏对话
+
+**1. `/revise` — AI 改写选中文本 (Inline AI Bubble)**
 
 ```python
 @router.post("/revise", response_model=EditorReviseResponse)
@@ -318,7 +364,41 @@ async def revise_text(body: EditorReviseRequest):
     ])
 ```
 
-### 3.9 `backend/app/schemas/__init__.py` — Pydantic 数据契约
+**2. `/chat` — 侧边栏大模型流式对话（SSE + RAG 知识库注入）**
+
+```python
+_CHAT_WORK_SYSTEM = (
+    "你是一个专业的产品分析师与报告撰写助手。"
+    "请务必优先基于【项目知识库参考】或【编辑器选中文本参考】中的信息来客观、严谨地回答用户问题。"
+    "如果是提取或总结任务，请直接列出核心主题，不要包含多余的寒暄。"
+)
+
+@router.post("/chat")
+async def chat_with_editor(body: EditorChatRequest):
+    # 拼接当前用户提问 + 编辑器选中文本
+    current_content = body.message
+    if body.selected_text:
+        current_content += f"\n\n【编辑器选中文本参考】\n{body.selected_text}"
+
+    # 🚀 RAG 检索：work 模式自动从 Chroma + BM25 召回 Top-5 切片
+    if body.chat_mode == "work" or "test" in body.message.lower():
+        try:
+            rag_context = retrieve_context(
+                query=body.message, k=5,
+                project_id=str(body.project_id),  # per-project 隔离
+            )
+            if rag_context and rag_context.strip():
+                current_content += f"\n\n【项目知识库参考（含本地文档）】\n{rag_context}"
+        except Exception as e:
+            logger.warning("editor/chat RAG 检索异常: %s", str(e))
+
+    messages.append({"role": "user", "content": current_content})
+    # → SSE 流式返回 LLM 回复
+```
+
+> **设计意图**: `/chat` 在 work 模式下先调用 `retrieve_context()` 从项目隔离的 Chroma + BM25 向量库中召回相关文档切片，再注入到 LLM 上下文中。这彻底打通了"本地上传 PDF → 切片入库 → 对话检索"的完整链路，解决了之前 LLM 不知道用户上传了什么文件的上下文断流 Bug。
+
+### 4.9 `backend/app/schemas/__init__.py` — Pydantic 数据契约
 
 所有请求/响应模型约 300 行，定义 API 的类型契约：
 
@@ -347,7 +427,7 @@ class SSEDraftEvent(BaseModel):
     error: str | None
 ```
 
-### 3.10 `backend/app/shared/outline_parser.py` — Markdown 大纲解析
+### 4.10 `backend/app/shared/outline_parser.py` — Markdown 大纲解析
 
 ```python
 def extract_sections(outline: str) -> list[str]:
@@ -365,11 +445,15 @@ def extract_sections(outline: str) -> list[str]:
     return sections
 ```
 
+### 4.11 `backend/app/services/__init__.py` — 服务层占位
+
+预留的业务服务层模块，用于从 API 端点中抽离复杂业务逻辑。
+
 ---
 
-## 4. 异步任务引擎 (backend/app/tasks/)
+## 5. 异步任务引擎 (backend/app/tasks/)
 
-### 4.1 `report_workflow.py` — 三阶段状态机编排器
+### 5.1 `report_workflow.py` — 三阶段状态机编排器
 
 这是整个系统的**核心编排逻辑**：
 
@@ -407,7 +491,7 @@ def run_draft_sections_workflow(self, project_id: str):
     repo.update_status(project_id, ProjectStatus.COMPLETED)
 ```
 
-### 4.2 `search_tasks.py` — 搜索 + 抓取
+### 5.2 `search_tasks.py` — 搜索 + 抓取
 
 ```python
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
@@ -426,7 +510,7 @@ def search_and_crawl(self, topic: str) -> list[dict]:
     return crawled
 ```
 
-### 4.3 `knowledge_tasks.py` — 知识库构建
+### 5.3 `knowledge_tasks.py` — 知识库构建
 
 ```python
 @celery_app.task(bind=True)
@@ -443,7 +527,7 @@ def build_knowledge_base(self, topic: str, project_id: str):
     build_bm25_index(all_chunks, project_id)    # BM25 持久化
 ```
 
-### 4.4 `writing_tasks.py` — 大纲生成 + 章节撰写
+### 5.4 `writing_tasks.py` — 大纲生成 + 章节撰写
 
 ```python
 @celery_app.task(bind=True, max_retries=2)
@@ -455,7 +539,7 @@ def write_section_task(self, project_id: str, section_title: str) -> str:
     return write_section(project_id, section_title)
 ```
 
-### 4.5 `render_tasks.py` — Markdown 组装 + PDF 渲染
+### 5.5 `render_tasks.py` — Markdown 组装 + PDF 渲染
 
 ```python
 @celery_app.task(bind=True)
@@ -469,11 +553,52 @@ def generate_pdf(self, project_id: str) -> str:
 
 ---
 
-## 5. 研究引擎 (app/)
+## 6. 数据仓库层 (backend/app/repositories/)
+
+### 6.1 `project_repo.py` — ProjectRepo 同步数据库仓库
+
+**作用**: 为 Celery Worker 提供统一的同步数据库访问接口，消除散落在各任务中的 raw SQL 和 `asyncio.run()` 调用。
+
+```python
+class ProjectRepo:
+    """同步数据库仓库——专供 Celery Worker 使用。"""
+
+    def __init__(self):
+        self._engine = get_sync_engine()
+
+    # ── 项目查询 ──
+    def get_project(self, project_id: str) -> Project          # 获取项目 ORM
+    def get_project_topic(self, project_id: str) -> str        # 获取 topic
+    def get_project_outline(self, project_id: str) -> str | None  # 获取大纲
+
+    # ── 状态更新 ──
+    def update_project_status(self, project_id, status, ...)   # 更新项目状态
+    def update_project_outline(self, project_id, outline)      # 保存大纲
+
+    # ── 任务管理 ──
+    def update_task_status(self, project_id, task_type, status) # 更新任务状态
+    def update_section_task_status(self, ...)                  # 更新章节任务
+    def create_section_tasks(self, project_id, titles)         # 动态创建章节任务
+
+    # ── 文档块 (DocumentBlock) ──
+    def save_document_block(self, project_id, section, content, citations, order)
+
+    # ── 文档快照 (Document) ──
+    def save_document(self, project_id, section, content, source_urls, order)
+
+    # ── 时间轴日志 (ProjectLog) ──
+    def append_project_log(self, project_id, step, message, level, icon)
+```
+
+> **设计意图**: Celery Worker 在同步上下文中运行。ProjectRepo 使用同步 SQLAlchemy 引擎 + ORM 查询，直接返回 ORM 对象（`session.expunge()` 后 detach），无需 `asyncio.run()` 或 `nest_asyncio`。
+
+---
+
+## 7. 研究引擎 (app/)
 
 > 这是项目的**算法核心**，独立于 FastAPI 后端，可单独作为 Python 模块运行。
 
-### 5.1 `app/llm/client.py` — LLM 客户端工厂
+### 7.1 `app/llm/client.py` — LLM 客户端工厂
 
 ```python
 def get_llm(temperature: float = 0.7) -> ChatOpenAI:
@@ -486,7 +611,60 @@ def get_llm(temperature: float = 0.7) -> ChatOpenAI:
     )
 ```
 
-### 5.2 `app/rag/retriever.py` — 混合检索引擎
+### 7.2 `app/llm/prompts.py` — 系统提示词库
+
+集中管理所有 LLM 系统提示词（大纲生成、章节撰写、编辑器润色等），便于统一调优和 A/B 测试。
+
+### 7.3 `app/search/tavily_search.py` — Tavily 搜索封装
+
+```python
+def tavily_search(query: str, max_results: int = 5):
+    """调用 Tavily Search API，返回结构化搜索结果"""
+    client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+    return client.search(query=query, max_results=max_results)
+```
+
+### 7.4 `app/crawler/firecrawl_crawler.py` — Firecrawl 深度抓取
+
+```python
+def crawl_url(url: str):
+    """调用 Firecrawl API 抓取网页，返回 Markdown 格式的正文内容"""
+    app = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
+    return app.scrape(url=url, formats=["markdown"])
+```
+
+### 7.5 `app/context/context_builder.py` — 搜索上下文构建
+
+将 Tavily 返回的原始搜索结果格式化为 LLM 可消费的结构化上下文块（含来源 URL 和编号）。
+
+### 7.6 `app/rag/chunker.py` — 文本切片
+
+```python
+def chunk_text(text: str, chunk_size: int = 1200, chunk_overlap: int = 200):
+    """使用 RecursiveCharacterTextSplitter 将长文本切分为重叠片段"""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    return splitter.split_text(text)
+```
+
+### 7.7 `app/rag/vector_store.py` — 向量 + BM25 双引擎持久化
+
+```python
+class LocalEmbeddingModel:
+    """Embedding 模型封装 —— 线程安全单例（SentenceTransformer）"""
+
+def build_vector_store(chunk_data_list: list[dict], project_id: str | None = None):
+    """
+    接收带元数据的切片列表，构建：
+    1. Chroma 向量库（per-project 子目录隔离）
+    2. BM25 语料 pickle 持久化
+    杜绝多项目并发覆盖。
+    """
+```
+
+> **关键设计**: 每个项目使用独立子目录 (`chroma_db/<project_id>/`, `bm25_db/<project_id>/`)，杜绝多项目并发时的数据覆盖问题。Embedding 模型路径从配置中心读取，默认使用 `BAAI/bge-small-zh-v1.5`。
+
+### 7.8 `app/rag/retriever.py` — 混合检索引擎
 
 ```python
 class HybridRetriever:
@@ -510,7 +688,19 @@ class HybridRetriever:
         return sorted(scores, key=scores.get, reverse=True)
 ```
 
-### 5.3 `app/rag/citation_utils.py` — 引用溯源引擎
+### 7.9 `app/rag/rag_pipeline.py` — RAG Pipeline 编排
+
+```python
+def build_knowledge_base(query: str, project_id: str | None = None):
+    """搜索 → 爬取 → 切片 → 向量化，构建项目知识库的完整流水线"""
+
+def retrieve_context(query: str, k: int = 5, project_id: str | None = None) -> str:
+    """检索并格式化为 LLM 可消费的上下文字符串（含来源 URL）"""
+```
+
+串联 Tavily 搜索 → Firecrawl 抓取 → chunker 切片 → vector_store 持久化的完整 RAG 构建流程。
+
+### 7.10 `app/rag/citation_utils.py` — 引用溯源引擎
 
 ```python
 def build_context_with_citations(documents: list[Document]) -> tuple[str, dict]:
@@ -530,7 +720,7 @@ def build_context_with_citations(documents: list[Document]) -> tuple[str, dict]:
     return "\n\n".join(context_parts), seen_urls
 ```
 
-### 5.4 `app/planner/outline_generator.py` — 大纲生成
+### 7.11 `app/planner/outline_generator.py` — 大纲生成
 
 ```python
 def generate_outline(topic: str) -> str:
@@ -546,7 +736,31 @@ def generate_outline(topic: str) -> str:
     return response.content
 ```
 
-### 5.5 `app/report/section_writer.py` — 章节撰写（含引用）
+### 7.12 `app/planner/query_planner.py` — 检索词规划器
+
+```python
+def plan_section_queries(topic: str, section_title: str, num_queries: int = 3) -> list:
+    """
+    将宽泛的章节标题拆解为多个具体的检索问句 (Query Planning)。
+    使用 LLM 生成高密度关键词搜索词组，避免宽泛噪音。
+    如 "市场分析" → ["Meta Ray-Ban 华为 Xreal 销量 市场份额", ...]
+    """
+```
+
+**设计价值**: 原始检索直接用章节标题，往往召回宽泛的噪音。Query Planning 用 LLM 将标题拆解为高密度关键词词组，在三方评测（`tests/eval_ranking.py`）中召回质量显著优于 baseline。
+
+### 7.13 `app/planner/compare_query.py` — Query Planning 对比评测
+
+```python
+def run_comparison(topic, section):
+    """对比原始检索 vs Query Planning 的检索质量。
+    路径 A: 直接使用标题检索 (baseline)
+    路径 B: Query Planning 拆解后检索
+    输出覆盖度、相关性、耗时三维对比报告。
+    """
+```
+
+### 7.14 `app/report/section_writer.py` — 章节撰写（含引用）
 
 ```python
 def write_section(project_id: str, section_title: str) -> str:
@@ -566,7 +780,7 @@ def write_section(project_id: str, section_title: str) -> str:
     return response.content
 ```
 
-### 5.6 `app/report/pdf_generator.py` — 16:9 横版 PDF
+### 7.15 `app/report/pdf_generator.py` — 16:9 横版 PDF
 
 ```python
 def markdown_to_pdf(md_content: str, project_id: str, topic: str) -> str:
@@ -589,7 +803,30 @@ def markdown_to_pdf(md_content: str, project_id: str, topic: str) -> str:
     return pdf_path
 ```
 
-### 5.7 `app/orchestrator/workflow.py` — 端到端流程
+### 7.16 `app/report/markdown_formatter.py` — Markdown 报告组装
+
+```python
+def build_report(title: str, sections: list) -> str:
+    """将标题 + 多个章节正文拼接为完整 Markdown 报告"""
+    report = f"# {title}\n\n"
+    for section in sections:
+        report += section + "\n\n"
+    return report
+```
+
+### 7.17 `app/retrieval/research_pipeline.py` — CLI 研究流水线
+
+```python
+def research_topic(query: str):
+    """端到端研究流水线：搜索 → 抓取 → 返回带结构化的文档列表"""
+    search_results = tavily_search(query)
+    for item in search_results["results"][:3]:
+        crawl_result = crawl_url(item["url"])
+        collected_docs.append({"title": ..., "url": ..., "content": ...})
+    return collected_docs
+```
+
+### 7.18 `app/orchestrator/workflow.py` — 端到端流程
 
 ```python
 def run_workflow(topic: str) -> dict:
@@ -611,11 +848,26 @@ def run_workflow(topic: str) -> dict:
     return {"outline": outline, "sections": written, "pdf": pdf}
 ```
 
+### 7.19 `app/shared/outline_parser.py` — Markdown 大纲解析（副本）
+
+与 `backend/app/shared/outline_parser.py` 功能一致，供 app 层独立运行时使用。
+
+### 7.20 `app/shared/time_utils.py` — 统一 UTC 时间戳
+
+```python
+def utcnow() -> datetime:
+    """
+    返回带 UTC 时区标记的当前时间。
+    统一全项目时间处理，替代散落的 datetime.now() 调用。
+    """
+    return datetime.now(timezone.utc)
+```
+
 ---
 
-## 6. 前端架构 (frontend/src/)
+## 8. 前端架构 (frontend/src/)
 
-### 6.1 `main.tsx` — React 入口
+### 8.1 `main.tsx` — React 入口
 
 ```tsx
 const queryClient = new QueryClient({
@@ -632,19 +884,29 @@ createRoot(document.getElementById("root")!).render(
 );
 ```
 
-### 6.2 `App.tsx` — 路由定义
+### 8.2 `App.tsx` — 路由定义
 
 ```tsx
 <Routes>
   <Route path="/" element={<Layout />}>
     <Route index element={<DashboardPage />} />
     <Route path="projects/:id/workspace" element={<WorkspacePage />} />
+    <Route path="projects/:id/progress" element={<ProgressPage />} />
     <Route path="projects/:id/report" element={<ReportPage />} />
   </Route>
 </Routes>
 ```
 
-### 6.3 `pages/WorkspacePage.tsx` — 三栏工作台（核心页面）
+### 8.3 页面组件
+
+| 文件 | 作用 |
+|------|------|
+| `pages/DashboardPage.tsx` | 首页仪表盘：项目列表 + 创建新项目 |
+| `pages/WorkspacePage.tsx` | **核心页面**：三栏工作台（大纲树 + 中心面板 + 右侧面板） |
+| `pages/ProgressPage.tsx` | 项目执行进度全屏视图（实时任务状态 + 时间轴） |
+| `pages/ReportPage.tsx` | 最终报告预览页（Markdown 渲染 + 引用角标） |
+
+### 8.4 `pages/WorkspacePage.tsx` — 三栏工作台（核心页面）
 
 ```tsx
 function WorkspacePage() {
@@ -670,7 +932,94 @@ function WorkspacePage() {
 }
 ```
 
-### 6.4 `hooks/useProjectStatus.ts` — 状态感知轮询
+### 8.5 通用组件 (`components/common/`)
+
+| 文件 | 作用 |
+|------|------|
+| `badge.tsx` | 状态徽章（pending / processing / completed / failed） |
+| `button.tsx` | 通用按钮组件 |
+| `dialog.tsx` | Radix UI 对话框封装 |
+| `input.tsx` | 通用输入框组件 |
+| `popover.tsx` | Radix UI 弹出层封装 |
+
+### 8.6 布局组件 (`components/layout/`)
+
+| 文件 | 作用 |
+|------|------|
+| `Layout.tsx` | 全局布局壳（侧边栏 + `<Outlet />`） |
+| `Sidebar.tsx` | 侧边栏导航（项目列表 + Logo + 新建按钮） |
+| `ThreePaneLayout.tsx` | 三栏可拖拽布局（左/中/右比例可调） |
+
+### 8.7 项目组件 (`components/projects/`)
+
+| 文件 | 作用 |
+|------|------|
+| `CreateProjectModal.tsx` | 新建项目弹窗（输入 topic → 调用 create API） |
+| `ProjectCard.tsx` | 项目卡片（显示状态 + 进度条 + 点击进入工作台） |
+| `ProgressTracker.tsx` | 任务进度追踪条（任务列表 + 状态图标 + 百分比） |
+| `SourcesReview.tsx` | 资料审核面板（用户勾选保留/删除搜索到的来源） |
+| `OutlineApproval.tsx` | 大纲审核面板（用户确认/编辑 AI 生成的大纲） |
+| `TerminalTimeline.tsx` | 终端风格实时日志流（基于 ProjectLog 模型渲染） |
+
+### 8.8 编辑器组件 (`components/editor/`)
+
+**`BlockEditor.tsx`** — Tiptap 块级编辑器：
+
+```tsx
+function BlockEditor({ blocks }: { blocks: EditorBlock[] }) {
+  const editor = useEditor({
+    extensions: [StarterKit, Underline, Placeholder, CitationMark, InlineAIBubble],
+    content: blocksToContent(blocks),  // DocumentBlock[] → ProseMirror JSON
+    editable: true,
+  });
+  return <EditorContent editor={editor} />;
+}
+```
+
+**`InlineAIBubble.tsx`** — 悬浮 AI 菜单：
+
+```tsx
+function InlineAIBubble({ editor, projectId }: Props) {
+  const handleRevise = async (instruction: string) => {
+    const { from, to } = editor.state.selection;
+    const selectedText = editor.state.doc.textBetween(from, to);
+    const result = await editorApi.revise({ ... });
+    showDiff({ original: selectedText, revised: result.revised_text });
+  };
+
+  return (
+    <BubbleMenu editor={editor}>
+      <button onClick={() => handleRevise("polish")}>✨ 润色</button>
+      <button onClick={() => handleRevise("expand")}>📝 扩写</button>
+      <button onClick={() => handleRevise("simplify")}>🔍 精简</button>
+      <input placeholder="自定义指令..." onKeyDown={...} />
+    </BubbleMenu>
+  );
+}
+```
+
+**`DiffViewNode.tsx`** — AI 修订 Diff 对比视图，展示原文 vs 润色后文本的差异高亮。
+
+**`extensions/CitationMark.ts`** — ProseMirror 自定义 Mark：将 `[^n]` 引用标记渲染为可点击的蓝色角标徽章。
+
+**`extensions/Citation.tsx`** — 引用角标 React 组件：点击后弹出引用来源卡片（URL + 摘要）。
+
+### 8.9 报告组件 (`components/report/`)
+
+**`CitationMarkdown.tsx`** — 增强 Markdown 渲染器，将正文中的 `[^n]` 引用标记自动渲染为可交互的引用角标，点击弹出引用来源详情。
+
+### 8.10 自定义 Hooks
+
+| Hook | 作用 |
+|------|------|
+| `useProjects.ts` | 项目列表获取（含创建/删除 mutation） |
+| `useProjectStatus.ts` | **状态感知轮询**：运行中 3 秒轮询，交互节点/终态自动停止 |
+| `useProjectLogs.ts` | 项目时间轴日志轮询（前端渲染 TerminalTimeline） |
+| `useDraftStream.ts` | SSE EventSource 流式接收章节撰写内容 |
+| `useEditorSync.ts` | 编辑器内容与后端 DocumentBlock 双向同步 |
+| `useCitationStore.ts` | 引用数据全局状态管理（ref_num → {title, url, snippet}） |
+
+### 8.11 `hooks/useProjectStatus.ts` — 状态感知轮询
 
 ```tsx
 function useProjectStatus(id: string) {
@@ -689,7 +1038,7 @@ function useProjectStatus(id: string) {
 }
 ```
 
-### 6.5 `hooks/useDraftStream.ts` — SSE 流式接收
+### 8.12 `hooks/useDraftStream.ts` — SSE 流式接收
 
 ```tsx
 function useDraftStream(projectId: string, onChunk: (block: SSEDraftEvent) => void) {
@@ -705,51 +1054,7 @@ function useDraftStream(projectId: string, onChunk: (block: SSEDraftEvent) => vo
 }
 ```
 
-### 6.6 `components/editor/BlockEditor.tsx` — Tiptap 块级编辑器
-
-```tsx
-function BlockEditor({ blocks }: { blocks: EditorBlock[] }) {
-  const editor = useEditor({
-    extensions: [StarterKit, Underline, Placeholder, CitationMark, InlineAIBubble],
-    content: blocksToContent(blocks),  // DocumentBlock[] → ProseMirror JSON
-    editable: true,
-  });
-
-  // 注册 BubbleMenu 扩展（Inline AI 悬浮菜单）
-  // 注册 CitationMark 扩展（[^n] 角标 → 可点击徽章）
-  return <EditorContent editor={editor} />;
-}
-```
-
-### 6.7 `components/editor/InlineAIBubble.tsx` — 悬浮 AI 菜单
-
-```tsx
-function InlineAIBubble({ editor, projectId }: Props) {
-  const handleRevise = async (instruction: string) => {
-    const { from, to } = editor.state.selection;
-    const selectedText = editor.state.doc.textBetween(from, to);
-    const result = await editorApi.revise({
-      project_id: projectId,
-      block_id: blockId,
-      selected_text: selectedText,
-      instruction,
-    });
-    // 打开 DiffView 展示修改前后对比
-    showDiff({ original: selectedText, revised: result.revised_text });
-  };
-
-  return (
-    <BubbleMenu editor={editor}>
-      <button onClick={() => handleRevise("polish")}>✨ 润色</button>
-      <button onClick={() => handleRevise("expand")}>📝 扩写</button>
-      <button onClick={() => handleRevise("simplify")}>🔍 精简</button>
-      <input placeholder="自定义指令..." onKeyDown={...} />
-    </BubbleMenu>
-  );
-}
-```
-
-### 6.8 `lib/api.ts` — API 服务层
+### 8.13 `lib/api.ts` — API 服务层
 
 ```tsx
 const projectsApi = {
@@ -769,21 +1074,32 @@ const editorApi = {
 };
 ```
 
+### 8.14 `lib/utils.ts` — 通用工具函数
+
+日期格式化、UUID 截断、状态标签映射等 UI 辅助函数。
+
+### 8.15 `types/` — TypeScript 类型定义
+
+| 文件 | 作用 |
+|------|------|
+| `types/api.ts` | API 请求/响应类型（`ProjectCreateRequest`, `ProjectStatusResponse`, `SSEDraftEvent` 等） |
+| `types/index.ts` | 通用 UI 类型（`EditorBlock`, `ProgressStep`, `LogEntry` 等） |
+
 ---
 
-## 7. 数据模型 (backend/app/models/)
+## 9. 数据模型 (backend/app/models/)
 
-### 7.1 模型关系
+### 9.1 模型关系
 
 ```
 User (1) ──< (N) Project (1) ──< (N) Task
                     │
-                    ├──< (N) Document        (完整章节)
+                    ├──< (N) Document        (完整章节快照)
                     ├──< (N) DocumentBlock    (原子化编辑块)
                     └──< (N) ProjectLog       (时间轴日志)
 ```
 
-### 7.2 `base.py` — 声明式基类
+### 9.2 `base.py` — 声明式基类
 
 ```python
 class Base(DeclarativeBase):
@@ -805,7 +1121,20 @@ def orm_to_dict(obj: Base) -> dict:
     return result
 ```
 
-### 7.3 `project.py` — 项目 + 状态枚举
+### 9.3 `user.py` — 用户
+
+```python
+class User(Base):
+    __tablename__ = "users"
+    id        = mapped_column(UUIDType, primary_key=True, default=uuid.uuid4)
+    username  = mapped_column(String(100), unique=True, nullable=False)
+    email     = mapped_column(String(255), unique=True, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
+```
+
+> 当前为简化版，仅作为 Project 的外键引用，不涉及完整的认证/授权流程。
+
+### 9.4 `project.py` — 项目 + 状态枚举
 
 ```python
 class ProjectStatus(str, enum.Enum):
@@ -825,11 +1154,13 @@ class Project(Base):
     status          = mapped_column(Enum(ProjectStatus, ...), index=True)
     outline_content = mapped_column(Text, nullable=True)
     pdf_path        = mapped_column(String(500), nullable=True)
+    md_path         = mapped_column(String(500), nullable=True)
     error_message   = mapped_column(Text, nullable=True)
     created_at      = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = mapped_column(DateTime(timezone=True), nullable=True)
 ```
 
-### 7.4 `task.py` — 任务
+### 9.5 `task.py` — 任务
 
 ```python
 class TaskType(str, enum.Enum):
@@ -846,9 +1177,21 @@ class TaskStatus(str, enum.Enum):
     PROCESSING = "processing"
     COMPLETED  = "completed"
     FAILED     = "failed"
+
+class Task(Base):
+    __tablename__ = "tasks"
+    id             = mapped_column(UUIDType, primary_key=True, default=uuid.uuid4)
+    project_id     = mapped_column(UUIDType, ForeignKey("projects.id"), index=True)
+    task_type      = mapped_column(Enum(TaskType, ...))
+    status         = mapped_column(Enum(TaskStatus, ...), default=TaskStatus.PENDING)
+    sequence_order = mapped_column(Integer, default=0)
+    section_title  = mapped_column(String(500), nullable=True)  # WRITE_SECTION 任务专属
+    started_at     = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at   = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message  = mapped_column(Text, nullable=True)
 ```
 
-### 7.5 `document_block.py` — 原子化内容块
+### 9.6 `document_block.py` — 原子化内容块
 
 ```python
 class DocumentBlock(Base):
@@ -859,11 +1202,51 @@ class DocumentBlock(Base):
     order_index   = mapped_column(Integer, default=0)  # 排序
     content       = mapped_column(Text, default="")    # Markdown 正文
     citations     = mapped_column(Text, nullable=True)  # JSON: {ref_num: {title,url}}
+    created_at    = mapped_column(DateTime(timezone=True), server_default=func.now())
+```
+
+### 9.7 `document.py` — 章节文档快照
+
+```python
+class Document(Base):
+    """报告章节文档 —— 每个 section 对应一条完整记录"""
+    __tablename__ = "documents"
+    id            = mapped_column(UUIDType, primary_key=True, default=uuid.uuid4)
+    project_id    = mapped_column(UUIDType, ForeignKey("projects.id"), index=True)
+    section_title = mapped_column(String(500))
+    section_order = mapped_column(Integer, default=0)
+    content       = mapped_column(Text, default="")
+    source_urls   = mapped_column(Text, nullable=True)  # JSON 格式的引用源 URL 列表
+    created_at    = mapped_column(DateTime(timezone=True), server_default=func.now())
+```
+
+> **Document vs DocumentBlock**: Document 是完整章节的一次性快照（用于报告全文组装），DocumentBlock 是流式撰写的原子化编辑块（SSE 逐块推送，Tiptap 实时渲染）。
+
+### 9.8 `project_log.py` — 项目时间轴日志
+
+```python
+class LogLevel(str, enum.Enum):
+    INFO = "info"
+    WARN = "warn"
+    ERROR = "error"
+    MILESTONE = "milestone"
+
+class ProjectLog(Base):
+    """项目执行时间轴日志 —— 前端渲染为终端控制台风格的实时日志流"""
+    __tablename__ = "project_logs"
+    id         = mapped_column(UUIDType, primary_key=True, default=uuid.uuid4)
+    project_id = mapped_column(UUIDType, nullable=False, index=True)
+    sequence   = mapped_column(Integer, nullable=False, default=0)
+    level      = mapped_column(Enum(LogLevel, ...), default=LogLevel.INFO)
+    step       = mapped_column(String(200), nullable=False)
+    message    = mapped_column(Text, nullable=False)
+    icon       = mapped_column(String(10), nullable=True)  # emoji 图标
+    created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
 ```
 
 ---
 
-## 8. 状态机流转全景
+## 10. 状态机流转全景
 
 ```
 用户创建项目
@@ -894,10 +1277,34 @@ PREPARING_DATA ──(Celery: 搜索+抓取)──▶ WAITING_FOR_SOURCES  🛑
 | SQLite NullPool + WAL | 单文件开发库，WAL 提升并发读写，NullPool 避免连接池冲突 |
 | SSE 轮询而非 WebSocket | 简化部署（无需额外 WS 服务器），2 秒间隔可接受 |
 | `orm_to_dict()` 手动转换 | 避免 Pydantic `from_attributes=True` 的嵌套序列化陷阱 |
-| Chroma + BM25 双引擎 | 向量检索覆盖语义，BM25 覆盖关键词精确匹配 |
+| Chroma + BM25 双引擎 + RRF | 向量检索覆盖语义，BM25 覆盖关键词精确匹配，RRF 融合最优排序 |
+| Per-project 向量库子目录 | 杜绝多项目并发时的数据互相覆盖 |
+| Query Planning + Baseline 对比 | LLM 拆解宽泛标题为高密度关键词，召回质量显著优于直接检索 |
 | 16:9 横版 PDF | WeasyPrint + CSS `@page size: 1440px 810px` 精确控制输出 |
 | Redis 容器化部署 | 避免 WSL sudo 权限问题，`--restart unless-stopped` 保活 |
 | 状态感知轮询停止 | 交互节点/终态自动停轮询，减少不必要的网络请求 |
+| ProjectRepo 同步仓库 | 消除任务中散落的 raw SQL 和 `asyncio.run()`，统一 Celery 数据访问 |
+| Document vs DocumentBlock 双模型 | Document 完整快照用于报告组装，DocumentBlock 原子化块用于流式编辑 |
+| ProjectLog 时间轴 | 结构化日志持久化到 DB，前端渲染为终端控制台实时流 |
+| `utcnow()` 统一时间戳 | 杜绝散落的 naive `datetime.now()`，确保全项目 UTC 一致性 |
+| `main.py` 双路径注入 (`sys.path`) | 同时加入 `backend/` 和项目根目录，桥接 `backend/app/` 与项目根 `app/` 两套包体系，使 RAG/搜索/爬虫等研究引擎模块可从后端代码直接 import |
+| `/editor/chat` RAG 上下文注入 | work 模式自动调用 `retrieve_context()` 从 Chroma + BM25 召回 Top-5 切片注入 LLM 上下文，打通"上传 PDF → 切片入库 → 对话检索"完整链路 |
+
+---
+
+## 11. 测试与评测
+
+### 11.1 `tests/eval_retrieval.py` — 检索质量评测
+
+评测混合检索引擎（Chroma + BM25 + RRF）在不同查询类型下的召回率、精确率和 MRR。
+
+### 11.2 `tests/eval_ranking.py` — 排序质量评测
+
+评测 Query Planning vs 原始检索的排序效果对比，验证 RRF 融合权重和 Query Planning 的收益。
+
+### 11.3 `tests/eval_citation.py` — 引用质量评测
+
+评测引用溯源引擎的准确率：生成的 `[^n]` 脚注是否正确关联到对应的来源 URL 和内容片段。
 
 ---
 

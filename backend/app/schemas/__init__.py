@@ -381,3 +381,37 @@ class ProjectLogListResponse(BaseModel):
         description="按 sequence 排序的日志列表",
     )
     total_count: int = Field(0, description="日志总数")
+
+
+# ================================================================
+# 🆕 Task 2: 核心 API 追加契约
+# ================================================================
+
+class EditorChatMessage(BaseModel):
+    """侧边栏聊天历史消息"""
+    role: Literal["user", "assistant"] = Field(..., description="发送方角色")
+    content: str = Field(..., description="消息内容")
+
+
+class EditorChatRequest(BaseModel):
+    """侧边栏大模型对话请求"""
+    project_id: uuid.UUID = Field(..., description="项目 UUID")
+    chat_mode: Literal["chat", "work"] = Field(
+        default="work",
+        description="对话模式：chat (自由闲聊) | work (专业工作型)",
+    )
+    message: str = Field(..., description="当前用户的提问")
+    selected_text: str | None = Field(None, description="编辑器中选中的文本上下文")
+    history: list[EditorChatMessage] = Field(default_factory=list, description="历史对话记录")
+
+
+class ExportPdfRequest(BaseModel):
+    """前端发起 HTML/Markdown 导出 PDF 请求"""
+    html_content: str = Field(..., description="前端 Tiptap 编辑器输出的完整内容")
+
+
+class UploadDocsResponse(BaseModel):
+    """本地文件上传响应"""
+    project_id: uuid.UUID = Field(..., description="项目 UUID")
+    chunk_count: int = Field(..., description="成功解析并入库的文本切片数量")
+    message: str = Field(..., description="操作结果说明")

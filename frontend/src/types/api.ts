@@ -307,3 +307,32 @@ export const PROGRESS_STEPS = [
   { type: 'build_report' as TaskTypeEnum, label: '报告排版', icon: '📄' },
   { type: 'generate_pdf' as TaskTypeEnum, label: 'PDF 输出', icon: '📕' },
 ] as const
+
+// ─── 🆕 侧边栏 AI 对话 (Editor Chat SSE) ──────────────────────────
+
+export interface EditorChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface EditorChatRequest {
+  project_id: string
+  chat_mode: 'chat' | 'work'
+  message: string
+  selected_text?: string | null
+  history: EditorChatMessage[]
+}
+
+// ─── 🆕 手动导出 PDF ───────────────────────────────────────────
+
+export interface ExportPdfRequest {
+  html_content: string
+}
+
+// ─── 🆕 本地上传文档 ──────────────────────────────────────────
+
+export interface UploadDocsResponse {
+  project_id: string
+  chunk_count: number
+  message: string
+}

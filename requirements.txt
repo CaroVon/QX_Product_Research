@@ -1,6 +1,6 @@
 # ============================================================
 # QX Product Research Agent — 完整 Python 依赖
-# Version: 0.1.0 | Python: 3.10+ | Updated: 2026-06-02
+# Version: 0.2.0 | Python: 3.10+ | Updated: 2026-06-22
 # 安装: pip install -r requirements.txt
 # ============================================================
 
@@ -56,6 +56,12 @@ Pillow==12.2.0
 # --- Testing ---
 pytest==9.0.3
 pytest-asyncio==1.4.0
+
+# --- Local File Processing ---
+PyMuPDF==1.23.8          # PDF 解析 (app/rag/local_parser.py)
+
+# --- Image Search ---
+duckduckgo-search>=5.3.1 # DuckDuckGo 图片搜索 (app/search/image_search.py)
 
 # --- Utilities ---
 watchfiles==1.2.0

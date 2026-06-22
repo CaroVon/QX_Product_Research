@@ -63,6 +63,10 @@ def get_source_weight(url: str) -> float:
     if not url or url == "unknown":
         return 1.0  # 未知来源，不奖不惩
 
+    # 本地上传资料享有 T0 级最高权重
+    if url.startswith("local://"):
+        return 1.5
+
     url_lower = url.lower()
 
     # T0 级 (权重 1.5): 绝对权威
