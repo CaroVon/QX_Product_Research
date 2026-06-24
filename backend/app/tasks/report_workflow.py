@@ -176,12 +176,16 @@ def generate_outline_workflow(self, project_id: str):
         repo.update_task_status(project_id, TaskType.BUILD_KNOWLEDGE_BASE, TaskStatus.COMPLETED)
 
         # ── 2. 大纲生成 ──────────────────────────────────
+        # 获取项目的模板类型，透传给 LLM 层
+        template_type = repo.get_project_template(project_id)
+        logger.info("[PHASE 2] 模板类型: %s", template_type)
+
         repo.update_task_status(project_id, TaskType.GENERATE_OUTLINE, TaskStatus.PROCESSING)
         repo.append_project_log(project_id, "generating_outline",
                                 "📝 正在规划产品研究大纲结构...", LogLevel.INFO, "📝")
         try:
             from app.tasks.writing_tasks import generate_outline_task
-            outline = generate_outline_task(project_id)
+            outline = generate_outline_task(project_id, template_type=template_type)
             logger.info("[PHASE 2] 大纲生成完成 (%d 字符)", len(outline))
             repo.append_project_log(project_id, "generating_outline",
                                     f"📋 大纲规划完成，共 {len(_extract_sections(outline))} 个章节",
@@ -231,13 +235,16 @@ def generate_outline_workflow(self, project_id: str):
 )
 def run_draft_sections_workflow(self, project_id: str):
     """
-    🎯 节点2：分章节异步撰写
+    🎯 节点2：分章节异步撰写（重构后不再自动生成 PDF）
     =========================
     状态机：DRAFTING → (自动) → COMPLETED
+
+    COMPLETED 终态现在代表"AI 初始草稿生成完成"，
+    等待用户在各页面中自由编辑与排版后，由前端手动触发 PDF 导出。
     """
     logger.info("=" * 60)
     logger.info("[PHASE 3] 🚀 分章节异步撰写 | project_id=%s", project_id)
-    logger.info("[PHASE 3] 状态: DRAFTING → COMPLETED")
+    logger.info("[PHASE 3] 状态: DRAFTING → COMPLETED（草稿就绪，等待用户编辑后手动导出 PDF）")
     logger.info("=" * 60)
 
     repo = ProjectRepo()
@@ -262,6 +269,10 @@ def run_draft_sections_workflow(self, project_id: str):
             section_titles = ["1. 行业概述", "2. 市场分析", "3. 竞争格局"]
             logger.warning("[PHASE 3] 大纲解析结果为空，使用默认章节: %s", section_titles)
 
+        # ─── 获取模板类型，透传给 LLM 撰写层 ──────────────
+        template_type = repo.get_project_template(project_id)
+        logger.info("[PHASE 3] 模板类型: %s", template_type)
+
         # ─── 3. 逐章节撰写 ────────────────────────────────
         section_results = []
         for idx, section_title in enumerate(section_titles):
@@ -275,7 +286,10 @@ def run_draft_sections_workflow(self, project_id: str):
 
             try:
                 from app.tasks.writing_tasks import write_single_section
-                content = write_single_section(project_id, section_title, idx)
+                content = write_single_section(
+                    project_id, section_title, idx,
+                    template_type=template_type,
+                )
 
                 if not content:
                     content = f"## {section_title}\n\n[本章节内容为空]\n"
@@ -300,62 +314,27 @@ def run_draft_sections_workflow(self, project_id: str):
                                         LogLevel.ERROR, "❌")
                 section_results.append(f"## {section_title}\n\n[本章节生成失败: {str(e)}]\n")
 
-        # ─── 4. 组装 Markdown 报告 ────────────────────────
-        logger.info("[PHASE 3] 组装 Markdown 报告...")
-        repo.update_task_status(project_id, TaskType.BUILD_REPORT, TaskStatus.PROCESSING)
-        repo.append_project_log(project_id, "building_report",
-                                "📄 正在排版组装完整报告...", LogLevel.INFO, "📄")
+        # ─── 【核心重构：切断自动流】 ──────────────────────
+        # 原步骤 4（组装 Markdown 报告）和步骤 5（生成 PDF）已移除。
+        # 现在的 COMPLETED 终态代表"AI 初始草稿生成完成"，
+        # 等待用户在各页面中自由编辑与排版后，由前端手动触发 PDF 导出。
 
-        try:
-            from app.tasks.render_tasks import build_report_markdown
-            md_path = build_report_markdown(project_id, section_results)
-            repo.append_project_log(project_id, "building_report",
-                                    "✅ 报告排版完成", LogLevel.MILESTONE, "✅")
-        except Exception as e:
-            repo.update_task_status(project_id, TaskType.BUILD_REPORT, TaskStatus.FAILED, str(e))
-            repo.append_project_log(project_id, "building_report",
-                                    f"❌ 报告排版失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
-            raise
+        # 直接将项目状态推进到 COMPLETED（草稿已就绪，等待用户编辑）
+        repo.update_project_status(project_id, ProjectStatus.COMPLETED, pdf_path=None, md_path=None)
 
-        repo.update_task_status(project_id, TaskType.BUILD_REPORT, TaskStatus.COMPLETED)
-
-        # ─── 5. 生成 PDF ──────────────────────────────────
-        logger.info("[PHASE 3] 渲染 PDF...")
-        repo.update_task_status(project_id, TaskType.GENERATE_PDF, TaskStatus.PROCESSING)
-        repo.append_project_log(project_id, "generating_pdf",
-                                "📕 正在生成横版 PPT 风格 PDF...", LogLevel.INFO, "📕")
-
-        try:
-            from app.tasks.render_tasks import generate_pdf_report
-            pdf_path = generate_pdf_report(project_id, md_path)
-            repo.append_project_log(project_id, "generating_pdf",
-                                    "🎉 PDF 渲染完成！", LogLevel.MILESTONE, "🎉")
-        except Exception as e:
-            repo.update_task_status(project_id, TaskType.GENERATE_PDF, TaskStatus.FAILED, str(e))
-            repo.append_project_log(project_id, "generating_pdf",
-                                    f"❌ PDF 渲染失败: {str(e)[:100]}", LogLevel.ERROR, "❌")
-            raise
-
-        repo.update_task_status(project_id, TaskType.GENERATE_PDF, TaskStatus.COMPLETED)
-
-        # ─── 6. 状态机推进到 COMPLETED ────────────────────
-        repo.update_project_status(project_id, ProjectStatus.COMPLETED, pdf_path=pdf_path, md_path=md_path)
+        repo.append_project_log(project_id, "drafting_complete",
+                                "🎉 AI 草稿分页生成完毕！已导入 Canvas 工作台。",
+                                LogLevel.MILESTONE, "🎉")
 
         log_state(project_id, "completed",
-                  f"✅ 全部完成！共撰写 {len(section_titles)} 个章节，PDF: {pdf_path}")
+                  f"✅ AI 草稿分页生成完毕！共撰写 {len(section_titles)} 个章节")
 
         logger.info("=" * 60)
-        logger.info("[PHASE 3] ✅ 全部完成 | project_id=%s", project_id)
-        logger.info("[PHASE 3] PDF: %s", pdf_path)
+        logger.info("[PHASE 3] ✅ AI 草稿分页生成完毕 | project_id=%s", project_id)
+        logger.info("[PHASE 3] 🔔 请用户在各页面中自由编辑与排版，完成后手动导出 PDF")
         logger.info("=" * 60)
 
-        return {
-            "project_id": project_id,
-            "status": "completed",
-            "sections_count": len(section_titles),
-            "md_path": md_path,
-            "pdf_path": pdf_path,
-        }
+        return {"project_id": project_id, "status": "completed"}
 
     except Exception as exc:
         logger.error("[PHASE 3] ❌ 撰写失败 | project_id=%s | error=%s", project_id, str(exc), exc_info=True)

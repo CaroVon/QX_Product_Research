@@ -87,6 +87,14 @@ class ProjectRepo:
         """获取项目的 outline_content 字段。"""
         return self.get_project(project_id).outline_content
 
+    def get_project_template(self, project_id: str) -> str:
+        """获取项目的模板类型（product 或 design），默认返回 "product"。"""
+        return self.get_project(project_id).template_type or "product"
+
+    def get_project_search_depth(self, project_id: str) -> int:
+        """获取项目的搜索强度，默认返回 10。"""
+        return getattr(self.get_project(project_id), 'search_depth', 10) or 10
+
     # ══════════════════════════════════════════════════════════
     # 项目状态更新
     # ══════════════════════════════════════════════════════════

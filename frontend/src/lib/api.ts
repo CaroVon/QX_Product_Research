@@ -189,6 +189,33 @@ export const projectsApi = {
     }
   },
 
+  /** 上传项目 Logo 图片 */
+  async uploadLogo(
+    projectId: string,
+    file: File,
+  ): Promise<{ project_id: string; logo_url: string; message: string }> {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const res = await fetch(`${API_BASE}/projects/${projectId}/logo`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try {
+        const body = await res.json()
+        detail = body.detail ?? detail
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, detail)
+    }
+
+    return res.json()
+  },
+
   /** 🆕 手动导出 PDF (前端拼接 HTML/Markdown 内容) */
   exportPdf(projectId: string, data: ExportPdfRequest): Promise<DownloadResponse> {
     return request(`/projects/${projectId}/export-pdf`, {

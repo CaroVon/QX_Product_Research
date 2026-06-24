@@ -3,3 +3,22 @@ bash /mnt/d/DEV/agents/QX_product_agent/stop_all.sh
 
 # 环境
 source /home/administrator/dev/agents/QX_product_agent/venv/bin/activate
+
+# 启动检测
+## 终端1
+(venv) administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/backend$ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+## 终端2
+(venv) administrator@AIGC-DEMO:~/dev/agents/QX_product_agent$ cd ~/dev/agents/QX_product_agent/backend
+(venv) administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/backend$ source ../venv/bin/activate
+(venv) administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/backend$ celery -A app.core.celery_app.celery_app worker --loglevel=info --concurrency=4 --pool=threads
+
+## 终端3
+administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/frontend$ rm -rf dist node_modules/.vite
+administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/frontend$ npm install
+
+up to date in 25s
+
+154 packages are looking for funding
+  run `npm fund` for details
+administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/frontend$ npm run dev

@@ -16,16 +16,21 @@ export interface MessageResponse {
 
 export interface ProjectCreateRequest {
   topic: string
+  template_type?: string  // 模板类型："product"（默认）或 "design"
+  search_depth?: number   // 搜索强度：5=快速, 10=标准, 15=深度, 20=极致
 }
 
 export interface ProjectResponse {
   id: string
   topic: string
   status: ProjectStatusEnum
+  template_type: string  // 模板类型："product" 或 "design"
   outline_content: string | null
   pdf_path: string | null
   md_path: string | null
   error_message: string | null
+  search_depth: number
+  logo_url: string | null
   created_at: string
   updated_at: string | null
 }
@@ -153,8 +158,11 @@ export interface ProjectStatusResponse {
   project_id: string
   topic: string
   project_status: ProjectStatusEnum
+  template_type: string
   outline_content: string | null
   pdf_path: string | null
+  search_depth: number
+  logo_url: string | null
   current_step: CurrentStep | null
   progress: ProgressInfo
   tasks: TaskResponse[]

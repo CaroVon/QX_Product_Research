@@ -54,14 +54,15 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
     """
     logger.info("[TASK] 开始数据采集 | project_id=%s", project_id)
 
-    # ─── 1. 从 Repository 获取主题 ────────────────────────────
+    # ─── 1. 从 Repository 获取主题与搜索强度 ────────────────
     from app.repositories import ProjectRepo
     repo = ProjectRepo()
     topic = repo.get_project_topic(project_id)
+    search_depth = repo.get_project_search_depth(project_id)
 
     settings = self.settings
 
-    logger.info("[TASK] 研究主题: %s", topic)
+    logger.info("[TASK] 研究主题: %s | search_depth=%d", topic, search_depth)
 
     # ─── 2. Tavily 搜索 ────────────────────────────────────────
     try:
@@ -70,7 +71,7 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
         # 设置 API Key
         os.environ["TAVILY_API_KEY"] = settings.TAVILY_API_KEY
 
-        search_results = tavily_search(topic, max_results=15)
+        search_results = tavily_search(topic, max_results=search_depth)
         results = search_results.get("results", [])
         logger.info("[TASK] Tavily 搜索完成，返回 %d 条结果", len(results))
     except Exception as e:
@@ -78,13 +79,14 @@ def search_and_crawl(self: SearchTask, project_id: str) -> list[dict[str, Any]]:
         # 搜索失败时应重试
         raise self.retry(exc=e)
 
-    # ─── 3. Firecrawl 爬取前 10 个 URL ─────────────────────────
+    # ─── 3. Firecrawl 爬取 ────────────────────────────────────
     from app.crawler.firecrawl_crawler import crawl_url
 
     os.environ["FIRECRAWL_API_KEY"] = settings.FIRECRAWL_API_KEY
 
+    crawl_limit = min(search_depth, 15)  # 最多爬取 15 个 URL
     crawled_data = []
-    for item in results[:10]:
+    for item in results[:crawl_limit]:
         url = item.get("url", "")
         if not url:
             continue

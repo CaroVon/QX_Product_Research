@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import uuid
 import os
+import time
 import logging
 import asyncio
 from typing import Any
@@ -117,6 +118,8 @@ async def create_project(
         owner_id=current_user_id,
         topic=body.topic,
         status=ProjectStatus.PREPARING_DATA,
+        template_type=body.template_type,
+        search_depth=body.search_depth,
     )
     db.add(project)
     await db.flush()
@@ -232,8 +235,11 @@ async def get_project_status(
         project_id=project.id,
         topic=project.topic,
         project_status=project.status,
+        template_type=project.template_type or "product",
         outline_content=project.outline_content,
         pdf_path=project.pdf_path,
+        search_depth=project.search_depth,
+        logo_url=project.logo_url,
         progress=progress,
         current_step=current_step,
         tasks=[TaskResponse.model_validate(orm_to_dict(t)) for t in tasks],
@@ -1046,6 +1052,43 @@ async def delete_project(
 
 
 # ================================================================
+# 🆕 POST /api/v1/projects/{project_id}/assets —— 幻灯片图片暂存
+# ================================================================
+
+@router.post("/{project_id}/assets")
+async def upload_slide_asset(
+    project_id: uuid.UUID,
+    file: UploadFile = File(...),
+):
+    """
+    🖼️ **幻灯片图片暂存 API**：接收用户在 Tiptap 编辑器中粘贴或上传的本地图片，
+    保存至静态目录并返回公开访问 URL，供编辑器直接插入。
+
+    返回格式：`{"url": "/outputs/assets/{project_id}/{uuid_filename}"}`
+    """
+    settings = get_settings()
+    asset_dir = os.path.join(settings.OUTPUT_DIR, "assets", str(project_id))
+    os.makedirs(asset_dir, exist_ok=True)
+
+    # 保留原扩展名，使用 UUID 避免文件名冲突
+    file_ext = os.path.splitext(file.filename or "image.png")[1] or ".png"
+    safe_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = os.path.join(asset_dir, safe_filename)
+
+    # 将文件二进制内容写入磁盘
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    logger.info("幻灯片图片已保存 | project=%s | filename=%s | size=%d",
+                project_id, safe_filename, len(content))
+
+    # 返回给 Tiptap 编辑器直接插入的公开访问 URL
+    public_url = f"/outputs/assets/{project_id}/{safe_filename}"
+    return {"url": public_url}
+
+
+# ================================================================
 # 🆕 POST /api/v1/projects/{project_id}/export-pdf —— 手动导出 PDF
 # ================================================================
 
@@ -1056,11 +1099,15 @@ async def export_manual_pdf(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    前端完成 Tiptap 编辑后，提交最终 HTML 内容请求后端渲染并生成 PDF 下载链接。
+    📄 **手动导出 PDF**：前端完成 Tiptap 编辑后，提交最终 HTML 内容，
+    后端调用 WeasyPrint 渲染真实分页 PDF 并返回下载链接。
 
-    注意：此接口仅接收 HTML 字符串，生成 PDF 并更新 project.pdf_path 字段。
-    目前返回 Mock 数据供前端联调，真正的 markdown_to_pdf/html_to_pdf
-    接入逻辑留待 Task 4 (PDF排版引擎) 处理。
+    流程：
+    1. 接收前端传来的合并后 HTML（每页由 .manual-pdf-page 包裹）
+    2. 生成基于时间戳的 PDF 文件名
+    3. 调用 render_custom_html_to_pdf 执行 WeasyPrint 渲染
+    4. 更新数据库 project.pdf_path
+    5. 返回 DownloadResponse（含 download_url）
     """
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
@@ -1068,17 +1115,109 @@ async def export_manual_pdf(
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    # TODO: 等待 Task 4 将 body.html_content 交给 WeasyPrint 渲染
-    # mock_pdf_path = markdown_to_pdf(body.html_content)
+    settings = get_settings()
 
-    # 目前返回 Mock 数据供前端调接口
-    mock_url = f"{get_settings().PDF_DOWNLOAD_BASE_URL}/mock_report.pdf"
+    # 生成基于时间戳的 PDF 文件名
+    pdf_filename = f"manual_report_{project_id}_{int(time.time())}.pdf"
+    pdf_full_path = os.path.join(settings.OUTPUT_DIR, pdf_filename)
+
+    # 调用 WeasyPrint 核心排版引擎
+    from app.report.pdf_generator import render_custom_html_to_pdf
+    try:
+        render_custom_html_to_pdf(
+            raw_html=body.html_content,
+            topic=project.topic,
+            output_pdf_path=pdf_full_path,
+        )
+    except Exception as e:
+        logger.error("WeasyPrint 手动导出失败: %s", str(e))
+        raise HTTPException(status_code=500, detail=f"PDF 渲染失败: {str(e)}")
+
+    # 更新数据库，指向最新的手动导出 PDF 成果
+    project.pdf_path = pdf_filename
+    await db.commit()
 
     return DownloadResponse(
         project_id=project_id,
         topic=project.topic,
-        download_url=mock_url,
-        filename="custom_report.pdf",
-        file_size_bytes=1024,
+        download_url=f"{settings.PDF_DOWNLOAD_BASE_URL}/{pdf_filename}",
+        filename=f"{project.topic}_终版报告.pdf",
+        file_size_bytes=os.path.getsize(pdf_full_path),
         report_ready=True,
     )
+
+
+# ================================================================
+# POST /api/v1/projects/{project_id}/logo —— 上传项目 Logo
+# ================================================================
+
+@router.post("/{project_id}/logo")
+async def upload_project_logo(
+    project_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    上传项目 Logo 图片（PNG/JPG/WebP/SVG/GIF，最大 2MB）。
+
+    保存到 outputs/logos/{project_id}/ 目录，
+    更新项目的 logo_url 字段并通过 StaticFiles 公开访问。
+    """
+    ALLOWED_CONTENT_TYPES = {
+        "image/png", "image/jpeg", "image/webp",
+        "image/svg+xml", "image/gif",
+    }
+    MAX_SIZE_BYTES = 2 * 1024 * 1024  # 2 MB
+
+    # 验证项目存在
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"项目 {project_id} 不存在",
+        )
+
+    # 验证文件类型
+    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"不支持的文件类型 '{file.content_type}'，仅支持 PNG/JPG/WebP/SVG/GIF",
+        )
+
+    # 读取文件内容并验证大小
+    content = await file.read()
+    if len(content) > MAX_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大 ({len(content)} bytes)，最大允许 2 MB",
+        )
+
+    # 保存到 outputs/logos/{project_id}/
+    settings = get_settings()
+    logo_dir = os.path.join(settings.OUTPUT_DIR, "logos", str(project_id))
+    os.makedirs(logo_dir, exist_ok=True)
+
+    file_ext = os.path.splitext(file.filename or "logo.png")[1] or ".png"
+    safe_filename = f"logo{file_ext}"
+    file_path = os.path.join(logo_dir, safe_filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # 构建公开 URL：/api/v1/files/logos/{project_id}/logo.ext
+    public_url = f"/api/v1/files/logos/{project_id}/{safe_filename}"
+
+    # 更新数据库
+    project.logo_url = public_url
+    await db.commit()
+
+    logger.info("Logo 已上传 | project=%s | url=%s", project_id, public_url)
+
+    return {
+        "project_id": str(project_id),
+        "logo_url": public_url,
+        "message": "Logo 已成功上传",
+    }

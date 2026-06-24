@@ -7,7 +7,7 @@ from tavily import TavilyClient
 load_dotenv()
 
 
-def tavily_search(query: str, max_results: int = 15): #搜索召回量，后续调整为10-15
+def tavily_search(query: str, max_results: int = 5): #搜索召回量，后续调整为10-15
 
     api_key = os.getenv("TAVILY_API_KEY")
 

@@ -100,6 +100,11 @@ def markdown_to_pdf(md_path: str, pdf_path: str, cover_image: str = ""):
     with open(temp_html_path, "w", encoding="utf-8") as f:
         f.write(premium_html)
 
+    # 确保输出目录存在（WeasyPrint 不会自动创建）
+    pdf_dir = os.path.dirname(pdf_path)
+    if pdf_dir:
+        os.makedirs(pdf_dir, exist_ok=True)
+
     HTML(filename=temp_html_path).write_pdf(pdf_path)
     logger.info("横版路演 PDF 已生成: %s", pdf_path)
 
@@ -508,6 +513,84 @@ def _build_cover(title: str, has_bg: bool, img_path: str) -> str:
             <strong>数据溯源</strong>&nbsp; 混合 RAG 多向并发权威检索链路
         </div>
     </div>"""
+
+
+# ══════════════════════════════════════════════════════════
+# 🆕 手动导出 PDF —— 接收前端编辑后的 HTML 矩阵
+# ══════════════════════════════════════════════════════════
+
+def render_custom_html_to_pdf(raw_html: str, topic: str, output_pdf_path: str):
+    """
+    专门接收前端编辑过的 HTML 矩阵，
+    合并最新 CSS 规范，输出 16:9 杂志级 PDF。
+
+    核心流程：
+    1. 构造包含 @page / 分页 CSS 的完整 HTML 骨架
+    2. 将前端传来的 raw_html 嵌入 <body>
+    3. 写入临时 .html 文件
+    4. 调用 WeasyPrint 渲染为真实 PDF
+    """
+    # 确保输出目录存在（WeasyPrint 不会自动创建）
+    out_dir = os.path.dirname(output_pdf_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # 安全化 topic 中的 HTML 特殊字符（防止 f-string 注入破坏 HTML）
+    safe_topic = topic.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # 构造顶级排版 HTML 骨架
+    premium_html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{safe_topic} — 产品深度研究报告</title>
+<style>
+    @page {{
+        size: 320mm 180mm;
+        margin: 18mm 20mm 15mm 20mm;
+        background-color: #F8F9FA;
+    }}
+
+    /* 核心：控制每一页的硬截断，使用户在前端编辑的"每一页"完美映射到 PDF 的每一页 */
+    .manual-pdf-page {{
+        page-break-after: always;
+        box-sizing: border-box;
+        height: 100%;
+    }}
+
+    body {{
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC',
+                     'WenQuanYi Zen Hei', 'Helvetica Neue', sans-serif;
+        color: #212529;
+        line-height: 1.7;
+        font-size: 13pt;
+        margin: 0;
+        padding: 0;
+    }}
+
+    .manual-slide-img {{
+        max-width: 100%;
+        max-height: 90mm;
+        display: block;
+        margin: 5mm auto;
+    }}
+</style>
+</head>
+<body>
+    {raw_html}
+</body>
+</html>"""
+
+    # 写入临时 HTML 文件供 WeasyPrint 读取
+    temp_path = output_pdf_path.replace(".pdf", "_manual_build.html")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        f.write(premium_html)
+
+    logger.info("手动导出 HTML 已写入临时文件: %s (%d 字符)", temp_path, len(premium_html))
+
+    # 调用 WeasyPrint 执行真实 PDF 渲染
+    HTML(filename=temp_path).write_pdf(output_pdf_path)
+    logger.info("手动导出 PDF 已生成: %s", output_pdf_path)
 
 
 # ══════════════════════════════════════════════════════════

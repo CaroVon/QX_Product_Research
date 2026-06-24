@@ -66,6 +66,18 @@ class ProjectCreateRequest(BaseModel):
         description="产品分析主题，例如：'智能手表产品分析'",
         examples=["智能手表产品分析"],
     )
+    template_type: str = Field(
+        default="product",
+        description="模板类型：product（产品预研）或 design（工业设计推演）",
+        examples=["product", "design"],
+    )
+    search_depth: int = Field(
+        default=10,
+        ge=5,
+        le=20,
+        description="搜索强度: 5=快速, 10=标准, 15=深度, 20=极致",
+        examples=[5, 10, 15, 20],
+    )
 
 
 class ProjectResponse(BaseModel):
@@ -73,10 +85,13 @@ class ProjectResponse(BaseModel):
     id: uuid.UUID = Field(..., description="项目 UUID")
     topic: str = Field(..., description="分析主题")
     status: str = Field(..., description="项目状态")
+    template_type: str = Field(default="product", description="模板类型：product 或 design")
     outline_content: str | None = Field(None, description="暂存的大纲 Markdown")
     pdf_path: str | None = Field(None, description="PDF 文件路径")
     md_path: str | None = Field(None, description="Markdown 文件路径")
     error_message: str | None = Field(None, description="错误信息")
+    search_depth: int = Field(default=10, description="搜索强度")
+    logo_url: str | None = Field(None, description="Logo 图片 URL")
     created_at: datetime = Field(..., description="创建时间")
     updated_at: datetime | None = Field(None, description="更新时间")
 
@@ -200,8 +215,11 @@ class ProjectStatusResponse(BaseModel):
     project_id: uuid.UUID = Field(..., description="项目 UUID")
     topic: str = Field(..., description="分析主题")
     project_status: str = Field(..., description="项目整体状态")
+    template_type: str = Field(default="product", description="模板类型：product 或 design")
     outline_content: str | None = Field(None, description="暂存大纲内容（WAITING_OUTLINE_APPROVAL 时有值）")
     pdf_path: str | None = Field(None, description="PDF 文件相对路径（完成后有值）")
+    search_depth: int = Field(default=10, description="搜索强度")
+    logo_url: str | None = Field(None, description="Logo 图片 URL")
     current_step: dict[str, Any] | None = Field(
         None,
         description="🆕 当前执行步骤（step/message/icon/level），从前端实时日志时间轴推导",
