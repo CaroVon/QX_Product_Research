@@ -16,9 +16,23 @@ source /home/administrator/dev/agents/QX_product_agent/venv/bin/activate
 ## 终端3
 administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/frontend$ rm -rf dist node_modules/.vite
 administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/frontend$ npm install
-
-up to date in 25s
-
-154 packages are looking for funding
-  run `npm fund` for details
 administrator@AIGC-DEMO:~/dev/agents/QX_product_agent/frontend$ npm run dev
+
+
+## logo大小
+ 已修改两处（dataTransform.ts）：
+
+  ┌─────────────────────────┬────────────────────────┬────────────────────────┐
+  │          位置           │          旧值          │          新值          │
+  ├─────────────────────────┼────────────────────────┼────────────────────────┤
+  │ 行 283：Logo 容器尺寸   │ width: 100, height: 40 │ width: 160, height: 60 │
+  ├─────────────────────────┼────────────────────────┼────────────────────────┤
+  │ 行 78：正文安全区 safeX │ 160                    │ 220                    │
+  └─────────────────────────┴────────────────────────┴────────────────────────┘
+
+  如果你想自己调整放缩比例，改这两个数就行：
+  - 行 283：buildSlideDecor 里 Logo 的 width / height——这是 Logo 的容器大小，RenderImage 会在容器内等比
+  contain。改大容器 = Logo 更大
+  - 行 78：computeLayout 里 safeX——正文的左侧起始位置。Logo 宽 160 + x偏移 40 = 右边缘 200，safeX=220 留 20px 间距
+
+  ▎ 例如 Logo 想更大：把 width/height 改成 200, 80，safeX 同步改成 260
