@@ -1,8 +1,14 @@
 # QX Product Research Agent — 项目脚本架构文档
 
-> **版本**: v0.2 | **更新**: 2026-06-22
+> **版本**: v0.4 | **更新**: 2026-06-24
 >
 > 本文档描述项目的完整脚本结构、每段脚本的核心代码片段及其在系统中的作用。
+>
+> **v0.4 新增**: 排版引擎根治 (双重累加 Bug 修复 + 空页断层防护 + Logo Contain 缩放 + CSV 引号剥离) + React-Konva 替换 Fabric.js
+>
+> **v0.3 新增**: Canvas 幻灯片编辑器 (React-Konva) + 前端 jsPDF 导出 + 专用 EditorPage + 数据转换层 (marked AST)
+>
+> **v0.2 新增**: AI 侧边栏对话面板 (SSE 流式) + 本地上传 PDF/DOCX/TXT 入库 + 手动导出 PDF + 图片搜索 (DuckDuckGo)
 
 ---
 
@@ -14,11 +20,14 @@
 4. [后端应用层 (backend/app/)](#4-后端应用层-backendapp)
 5. [异步任务引擎 (backend/app/tasks/)](#5-异步任务引擎-backendapptasks)
 6. [数据仓库层 (backend/app/repositories/)](#6-数据仓库层-backendapprepositories)
-7. [研究引擎 (app/)](#7-研究引擎-app)
-8. [前端架构 (frontend/src/)](#8-前端架构-frontendsrc)
-9. [数据模型 (backend/app/models/)](#9-数据模型-backendappmodels)
-10. [状态机流转全景](#10-状态机流转全景)
-11. [测试与评测](#11-测试与评测)
+7. [数据库迁移 (backend/alembic/)](#7-数据库迁移-backendalembic)
+8. [后端测试套件 (backend/tests/)](#8-后端测试套件-backendtests)
+9. [研究引擎 (app/)](#9-研究引擎-app)
+10. [前端架构 (frontend/src/)](#10-前端架构-frontendsrc)
+11. [数据模型 (backend/app/models/)](#11-数据模型-backendappmodels)
+12. [状态机流转全景](#12-状态机流转全景)
+13. [测试与评测](#13-测试与评测)
+14. [运维工具脚本](#14-运维工具脚本)
 
 ---
 
@@ -27,19 +36,22 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                   Frontend (React + Vite)               │
-│              三栏工作台 + Tiptap 编辑器 + SSE            │
-│                    http://localhost:5173                 │
+│   WorkspacePage (项目管理) + EditorPage (Canvas 编辑器) │
+│   React-Konva 幻灯片排版 + jsPDF 前端导出 + SSE 流式      │
+│                    http://localhost:8000                 │
 └──────────────────────┬──────────────────────────────────┘
                        │ HTTP REST + SSE
 ┌──────────────────────▼──────────────────────────────────┐
 │                 Backend (FastAPI + Celery)               │
-│          状态机编排 + 异步任务队列 + REST API             │
+│    状态机编排 + 异步任务队列 + REST API + RAG 检索注入   │
+│    DRAFTING→COMPLETED（不再自动生成 PDF，前端接管）      │
 │                    http://localhost:8000                 │
 └──────────────────────┬──────────────────────────────────┘
                        │ Python import
 ┌──────────────────────▼──────────────────────────────────┐
 │              Research Engine (app/)                      │
-│  搜索→抓取→切片→向量库+BM25→RAG检索→大纲→撰写→PDF       │
+│  搜索→抓取→本地PDF解析→切片→向量库+BM25→RAG检索→大纲    │
+│  →撰写 + 图片搜索 (DuckDuckGo)                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -51,6 +63,7 @@
 QX_product_agent/
 ├── .claude/                    # Claude Code 配置（hooks / settings）
 ├── .gitignore
+├── .pytest_cache/              # pytest 缓存
 ├── README.md                   # 项目 README
 ├── PROJECT_STRUCTURE.md        # 本文档
 ├── prd.md                      # 产品需求文档 (PRD)
@@ -61,9 +74,10 @@ QX_product_agent/
 ├── start_all.sh                # WSL 全模块一键启动
 ├── stop_all.sh                 # WSL 全模块停止
 ├── start_project.bat           # Windows 桌面入口（双击→WSL）
+├── start_project.bat.txt       # .bat 的文本备份
 │
 ├── app/                        # 研究引擎（算法核心）
-├── backend/                    # FastAPI 后端 + Celery 任务队列
+├── backend/                    # FastAPI 后端 + Celery 任务队列 + Alembic 迁移 + 测试
 ├── frontend/                   # React + Vite 前端
 ├── tests/                      # 评测脚本（检索/排序/引用质量）
 ├── fix/                        # 问题修复记录
@@ -100,7 +114,7 @@ nohup celery -A app.core.celery_app.celery_app worker \
     --loglevel=info --concurrency=4 --pool=threads \
     > backend/celery.log 2>&1 &
 
-# 核心片段：启动 Vite 前端
+# 核心片段：启动 Vite 前端（端口 8000，与后端统一）
 nohup npm run dev > frontend/vite.log 2>&1 &
 
 # 核心片段：异步轮询等待后端就绪（ML 模型冷启动需 30-60s）
@@ -117,8 +131,6 @@ done
 PID=$(ss -tlnp | grep ':8000' | grep -oP 'pid=\K[0-9]+' | head -1)
 [ -n "$PID" ] && kill "$PID"
 pkill -f "celery.*worker"
-PID=$(ss -tlnp | grep ':5173' | grep -oP 'pid=\K[0-9]+' | head -1)
-[ -n "$PID" ] && kill "$PID"
 ```
 
 ### 3.3 `start_project.bat` — Windows 入口
@@ -131,7 +143,7 @@ wsl -e bash /mnt/d/DEV/agents/QX_product_agent/start_all.sh
 pause
 ```
 
-**设计意图**: Windows 用户双击 bat → 内部委托 WSL 执行 bash 脚本。所有环境（Python、Node、Redis）均在 WSL 内运行，数据统一落在 D 盘。
+**设计意图**: Windows 用户双击 bat → 内部委托 WSL 执行 bash 脚本。所有环境（Python、Node、Redis）均在 WSL 内运行。
 
 ### 3.4 `test_llm.py` — LLM 连通性快速验证
 
@@ -281,14 +293,14 @@ def get_crawled_data_path(project_id: str) -> str:
 ### 4.6 `backend/app/api/v1/router.py` — 路由聚合
 
 ```python
-router = APIRouter()
+router = APIRouter(prefix="/api/v1")
 router.include_router(projects.router)   # /api/v1/projects
 router.include_router(editor.router)     # /api/v1/editor
 ```
 
-### 4.7 `backend/app/api/v1/endpoints/projects.py` — 核心业务 API（约 950 行）
+### 4.7 `backend/app/api/v1/endpoints/projects.py` — 核心业务 API（约 1100 行）
 
-**状态机三节点**的 REST 实现：
+**状态机三节点**的 REST 实现 + 新增功能端点：
 
 ```python
 # 节点1：创建项目 + 触发 Phase 1（搜索 → 等待审核资料）
@@ -342,6 +354,19 @@ async def stream_draft(project_id, db):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 ```
 
+**新增端点**:
+
+| 端点 | 方法 | 作用 |
+|------|------|------|
+| `/{project_id}/upload-docs` | POST | 上传本地 PDF/DOCX/TXT → PyMuPDF 解析 → 切片入库（Chroma + BM25） |
+| `/{project_id}/export-pdf` | POST | 前端提交 HTML 内容 → 后端渲染 PDF 导出 |
+| `/{project_id}/sources` | GET | 获取搜索结果列表（供资料审核面板使用） |
+| `/{project_id}/blocks` | GET | 获取所有 DocumentBlock（供 Tiptap 编辑器加载） |
+| `/{project_id}/content` | GET | 获取报告全文内容（按章节排列 + 引用映射） |
+| `/{project_id}/logs` | GET | 获取项目时间轴日志（支持增量拉取 after_sequence） |
+| `/{project_id}/download` | GET | 获取 PDF 下载链接（仅 COMPLETED 状态可用） |
+| `/{project_id}` | DELETE | 软删除项目及其所有关联数据 |
+
 ### 4.8 `backend/app/api/v1/endpoints/editor.py` — Inline AI 编辑器 + 侧边栏对话
 
 **1. `/revise` — AI 改写选中文本 (Inline AI Bubble)**
@@ -364,7 +389,27 @@ async def revise_text(body: EditorReviseRequest):
     ])
 ```
 
-**2. `/chat` — 侧边栏大模型流式对话（SSE + RAG 知识库注入）**
+**2. `/revise-block/{block_id}` — 块级精准改写**
+
+与 `/revise` 的区别：
+- `/revise`: 纯文本改写，无状态
+- `/revise-block`: 从数据库加载目标块 + 前后相邻块作为上下文，支持上下文感知编辑
+
+```python
+@router.post("/revise-block/{block_id}", response_model=EditorReviseResponse)
+async def revise_block(block_id: uuid.UUID, body: BlockReviseRequest, db):
+    # 1. 加载目标块 + 前后相邻块（同 project 内按 order_index 排序）
+    block = await db.get(DocumentBlock, block_id)
+    neighbors = await db.execute(
+        select(DocumentBlock).where(
+            DocumentBlock.project_id == block.project_id,
+            DocumentBlock.order_index.in_([block.order_index - 1, block.order_index + 1]),
+        )
+    )
+    # 2. 构建上下文 → LLM 改写 → 返回修订文本
+```
+
+**3. `/chat` — 侧边栏大模型流式对话（SSE + RAG 知识库注入）**
 
 ```python
 _CHAT_WORK_SYSTEM = (
@@ -372,9 +417,15 @@ _CHAT_WORK_SYSTEM = (
     "请务必优先基于【项目知识库参考】或【编辑器选中文本参考】中的信息来客观、严谨地回答用户问题。"
     "如果是提取或总结任务，请直接列出核心主题，不要包含多余的寒暄。"
 )
+_CHAT_GENERAL_SYSTEM = (
+    "你是一个友好的 AI 助手，请自然、轻松地回答我的问题。"
+)
 
 @router.post("/chat")
 async def chat_with_editor(body: EditorChatRequest):
+    # 确定 System Prompt：work 模式 vs chat 模式
+    sys_prompt = _CHAT_WORK_SYSTEM if body.chat_mode == "work" else _CHAT_GENERAL_SYSTEM
+
     # 拼接当前用户提问 + 编辑器选中文本
     current_content = body.message
     if body.selected_text:
@@ -393,7 +444,7 @@ async def chat_with_editor(body: EditorChatRequest):
             logger.warning("editor/chat RAG 检索异常: %s", str(e))
 
     messages.append({"role": "user", "content": current_content})
-    # → SSE 流式返回 LLM 回复
+    # → SSE 流式返回 LLM 回复（event: content / event: done / event: error）
 ```
 
 > **设计意图**: `/chat` 在 work 模式下先调用 `retrieve_context()` 从项目隔离的 Chroma + BM25 向量库中召回相关文档切片，再注入到 LLM 上下文中。这彻底打通了"本地上传 PDF → 切片入库 → 对话检索"的完整链路，解决了之前 LLM 不知道用户上传了什么文件的上下文断流 Bug。
@@ -418,6 +469,18 @@ class EditorReviseRequest(BaseModel):
     selected_text: str
     instruction: Literal["expand", "simplify", "polish",
                          "add-competitors", "formalize"] | str
+
+class EditorChatRequest(BaseModel):
+    """侧边栏 AI 对话请求"""
+    project_id: uuid.UUID
+    chat_mode: Literal["chat", "work"]
+    message: str
+    selected_text: str | None
+    history: list[ChatMessage]
+
+class ExportPdfRequest(BaseModel):
+    """手动导出 PDF 请求"""
+    html_content: str
 
 class SSEDraftEvent(BaseModel):
     event_type: Literal["section_start", "section_chunk",
@@ -478,7 +541,7 @@ def generate_outline_workflow(self, project_id: str):
     repo.save_outline(project_id, outline)
     repo.update_status(project_id, ProjectStatus.WAITING_FOR_OUTLINE)
 
-# Phase 3：逐章撰写 → 组装报告 → 生成 PDF → COMPLETED
+# Phase 3：逐章撰写 → COMPLETED（v0.3: 不再自动生成 PDF，前端接管）
 @celery_app.task(bind=True, max_retries=3)
 def run_draft_sections_workflow(self, project_id: str):
     repo = ProjectRepo()
@@ -486,9 +549,11 @@ def run_draft_sections_workflow(self, project_id: str):
     for i, section in enumerate(sections):
         content = write_section_task(project_id, section)
         repo.save_sections(project_id, [(section, i, content)])
-    pdf_path = generate_pdf_from_markdown(md_content, project_id)
-    repo.update_pdf_path(project_id, pdf_path)
-    repo.update_status(project_id, ProjectStatus.COMPLETED)
+    # v0.3: 跳过 WeasyPrint PDF → 直接将草稿状态推进到 COMPLETED
+    repo.update_project_status(project_id, ProjectStatus.COMPLETED,
+                               pdf_path=None, md_path=None)
+    repo.append_project_log(project_id, "drafting_complete",
+                           "🎉 AI 草稿分页生成完毕！已导入 Canvas 工作台。")
 ```
 
 ### 5.2 `search_tasks.py` — 搜索 + 抓取
@@ -539,16 +604,16 @@ def write_section_task(self, project_id: str, section_title: str) -> str:
     return write_section(project_id, section_title)
 ```
 
-### 5.5 `render_tasks.py` — Markdown 组装 + PDF 渲染
+### 5.5 `render_tasks.py` — PDF 渲染（v0.3 起仅作历史记录 / 不再自动调用）
 
 ```python
 @celery_app.task(bind=True)
 def generate_pdf(self, project_id: str) -> str:
-    """将报告渲染为 16:9 横版 PPT 风格 PDF"""
+    """⚠️ v0.3 起不再自动调用。前端 jsPDF 接管 PDF 导出。"""
     sections = ProjectRepo().get_section_contents(project_id)
     md_content = build_report(topic, sections)
     pdf_path = markdown_to_pdf(md_content, project_id, topic)
-    return pdf_path  # 如 "reports/智能手表产品分析_20260618_130425.pdf"
+    return pdf_path
 ```
 
 ---
@@ -594,11 +659,90 @@ class ProjectRepo:
 
 ---
 
-## 7. 研究引擎 (app/)
+## 7. 数据库迁移 (backend/alembic/)
+
+### 7.1 `alembic/env.py` — Alembic 运行环境
+
+配置迁移引擎、导入 ORM Base 元数据，支持在线/离线两种迁移模式。
+
+```python
+from app.models import Base
+target_metadata = Base.metadata
+
+def run_migrations_online():
+    connectable = engine_from_config(config.get_section(...), prefix="sqlalchemy.", poolclass=NullPool)
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        context.run_migrations()
+```
+
+### 7.2 `alembic/versions/0001_initial_schema.py` — 初始表结构
+
+定义完整的初始数据库 schema，包含 5 张表：
+
+| 表名 | 关键字段 |
+|------|----------|
+| `users` | id, email, username, hashed_password, is_active, is_superuser, monthly_project_limit, projects_used_this_month, total_pages_generated, is_deleted, deleted_at |
+| `projects` | id, owner_id, topic, status (enum), outline_content, pdf_path, md_path, error_message, is_deleted |
+| `tasks` | id, project_id, task_type (enum), status (enum), sequence_order, section_title, celery_task_id, retry_count, max_retries |
+| `documents` | id, project_id, version, section_title, section_order, content, raw_content, source_urls |
+| `document_blocks` | id, project_id, section_title, order_index, content, citations (JSON) |
+
+迁移脚本末尾插入默认管理员用户 (UUID `00000000-0000-0000-0000-000000000001`)。
+
+> **注意**: 实际运行时 FastAPI 生命周期通过 `Base.metadata.create_all` 自动建表，Alembic 主要用于版本化 schema 管理和生产环境部署。
+
+---
+
+## 8. 后端测试套件 (backend/tests/)
+
+### 8.1 `conftest.py` — 测试配置与共享夹具
+
+提供 SQLite 内存测试数据库、Mock Celery 任务、HTTP 测试客户端等共享夹具。
+
+```python
+TEST_DB_URL = "sqlite+aiosqlite:///./test_research.db"
+
+class MockCeleryTask:
+    """模拟 Celery AsyncResult —— 避免测试依赖 Redis"""
+    _id = "mock-task-id-001"
+    def delay(self, *args, **kwargs): return self
+    def get(self, timeout=None): return {"status": "completed"}
+
+@pytest.fixture(autouse=True)
+async def setup_db():
+    """每个测试前重建数据库表并插入默认用户"""
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    # 插入默认 admin 用户
+    yield
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+@pytest.fixture
+async def client():
+    """创建带覆写数据库依赖的 HTTP 测试客户端"""
+    app.dependency_overrides[get_db] = override_get_db
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+```
+
+### 8.2 测试文件一览
+
+| 文件 | 覆盖范围 |
+|------|----------|
+| `test_imports.py` | 核心模块导入验证（config, schemas, models, celery_app, FastAPI app, outline_parser, ProjectRepo, engine） |
+| `test_state_machine.py` | ProjectStatus 枚举完整性、终态验证、交互状态验证、状态流转路径、API 层约束 |
+| `test_outline_parser.py` | Markdown 大纲解析（标准标题、空串、Tab 分隔、行内 #、三级标题过滤、中文标题、前后空白、真实大纲格式） |
+| `test_api_integration.py` | 端到端 API 集成测试：健康检查、项目 CRUD、Schema 校验 (422)、状态机流转 (+ Mock Celery)、资料审核阻断、大纲审批、编辑器 AI 改写、404 处理 |
+
+---
+
+## 9. 研究引擎 (app/)
 
 > 这是项目的**算法核心**，独立于 FastAPI 后端，可单独作为 Python 模块运行。
 
-### 7.1 `app/llm/client.py` — LLM 客户端工厂
+### 9.1 `app/llm/client.py` — LLM 客户端工厂
 
 ```python
 def get_llm(temperature: float = 0.7) -> ChatOpenAI:
@@ -611,11 +755,11 @@ def get_llm(temperature: float = 0.7) -> ChatOpenAI:
     )
 ```
 
-### 7.2 `app/llm/prompts.py` — 系统提示词库
+### 9.2 `app/llm/prompts.py` — 系统提示词库
 
 集中管理所有 LLM 系统提示词（大纲生成、章节撰写、编辑器润色等），便于统一调优和 A/B 测试。
 
-### 7.3 `app/search/tavily_search.py` — Tavily 搜索封装
+### 9.3 `app/search/tavily_search.py` — Tavily 搜索封装
 
 ```python
 def tavily_search(query: str, max_results: int = 5):
@@ -624,7 +768,22 @@ def tavily_search(query: str, max_results: int = 5):
     return client.search(query=query, max_results=max_results)
 ```
 
-### 7.4 `app/crawler/firecrawl_crawler.py` — Firecrawl 深度抓取
+### 9.4 `app/search/image_search.py` — 🆕 图片搜索（DuckDuckGo，免 API Key）
+
+```python
+def search_images(query: str, max_results: int = 3) -> list[dict]:
+    """
+    基于 DuckDuckGo 图片搜索，免 API Key。
+    返回：[{"title": "...", "image": "https://...", "url": "..."}]
+    """
+    ddgs = DDGS()
+    results = ddgs.images(keywords=query, region="wt-wt",
+                          safesearch="moderate", max_results=max_results)
+    return [{"title": r.get("title", ""), "image": r.get("image", ""),
+             "url": r.get("url", "")} for r in results if r.get("image")]
+```
+
+### 9.5 `app/crawler/firecrawl_crawler.py` — Firecrawl 深度抓取
 
 ```python
 def crawl_url(url: str):
@@ -633,11 +792,11 @@ def crawl_url(url: str):
     return app.scrape(url=url, formats=["markdown"])
 ```
 
-### 7.5 `app/context/context_builder.py` — 搜索上下文构建
+### 9.6 `app/context/context_builder.py` — 搜索上下文构建
 
 将 Tavily 返回的原始搜索结果格式化为 LLM 可消费的结构化上下文块（含来源 URL 和编号）。
 
-### 7.6 `app/rag/chunker.py` — 文本切片
+### 9.7 `app/rag/chunker.py` — 文本切片
 
 ```python
 def chunk_text(text: str, chunk_size: int = 1200, chunk_overlap: int = 200):
@@ -647,7 +806,25 @@ def chunk_text(text: str, chunk_size: int = 1200, chunk_overlap: int = 200):
     return splitter.split_text(text)
 ```
 
-### 7.7 `app/rag/vector_store.py` — 向量 + BM25 双引擎持久化
+### 9.8 `app/rag/local_parser.py` — 🆕 本地 PDF 解析
+
+```python
+def parse_local_pdf(file_path: str, filename: str) -> list[dict]:
+    """
+    使用 PyMuPDF (fitz) 解析本地 PDF 文件，提取全文文本，切片后返回。
+    每条切片以 local://{filename} 作为伪装 URL。
+    Returns: [{"content": "...", "url": "local://xxx.pdf"}, ...]
+    """
+    doc = fitz.open(file_path)
+    full_text = "\n".join(page.get_text() for page in doc if page.get_text())
+    doc.close()
+    chunks = chunk_text(full_text)
+    return [{"content": c, "url": f"local://{filename}"} for c in chunks]
+```
+
+> **设计意图**: 配合 `/projects/{id}/upload-docs` 端点，用户上传的 PDF 通过此模块解析 → 切片 → 存入项目隔离的 Chroma + BM25 知识库，最终在 AI 对话和撰写时作为 RAG 参考上下文注入。
+
+### 9.9 `app/rag/vector_store.py` — 向量 + BM25 双引擎持久化
 
 ```python
 class LocalEmbeddingModel:
@@ -664,7 +841,7 @@ def build_vector_store(chunk_data_list: list[dict], project_id: str | None = Non
 
 > **关键设计**: 每个项目使用独立子目录 (`chroma_db/<project_id>/`, `bm25_db/<project_id>/`)，杜绝多项目并发时的数据覆盖问题。Embedding 模型路径从配置中心读取，默认使用 `BAAI/bge-small-zh-v1.5`。
 
-### 7.8 `app/rag/retriever.py` — 混合检索引擎
+### 9.10 `app/rag/retriever.py` — 混合检索引擎
 
 ```python
 class HybridRetriever:
@@ -688,7 +865,7 @@ class HybridRetriever:
         return sorted(scores, key=scores.get, reverse=True)
 ```
 
-### 7.9 `app/rag/rag_pipeline.py` — RAG Pipeline 编排
+### 9.11 `app/rag/rag_pipeline.py` — RAG Pipeline 编排
 
 ```python
 def build_knowledge_base(query: str, project_id: str | None = None):
@@ -700,7 +877,7 @@ def retrieve_context(query: str, k: int = 5, project_id: str | None = None) -> s
 
 串联 Tavily 搜索 → Firecrawl 抓取 → chunker 切片 → vector_store 持久化的完整 RAG 构建流程。
 
-### 7.10 `app/rag/citation_utils.py` — 引用溯源引擎
+### 9.12 `app/rag/citation_utils.py` — 引用溯源引擎
 
 ```python
 def build_context_with_citations(documents: list[Document]) -> tuple[str, dict]:
@@ -720,7 +897,7 @@ def build_context_with_citations(documents: list[Document]) -> tuple[str, dict]:
     return "\n\n".join(context_parts), seen_urls
 ```
 
-### 7.11 `app/planner/outline_generator.py` — 大纲生成
+### 9.13 `app/planner/outline_generator.py` — 大纲生成
 
 ```python
 def generate_outline(topic: str) -> str:
@@ -736,7 +913,7 @@ def generate_outline(topic: str) -> str:
     return response.content
 ```
 
-### 7.12 `app/planner/query_planner.py` — 检索词规划器
+### 9.14 `app/planner/query_planner.py` — 检索词规划器
 
 ```python
 def plan_section_queries(topic: str, section_title: str, num_queries: int = 3) -> list:
@@ -749,7 +926,7 @@ def plan_section_queries(topic: str, section_title: str, num_queries: int = 3) -
 
 **设计价值**: 原始检索直接用章节标题，往往召回宽泛的噪音。Query Planning 用 LLM 将标题拆解为高密度关键词词组，在三方评测（`tests/eval_ranking.py`）中召回质量显著优于 baseline。
 
-### 7.13 `app/planner/compare_query.py` — Query Planning 对比评测
+### 9.15 `app/planner/compare_query.py` — Query Planning 对比评测
 
 ```python
 def run_comparison(topic, section):
@@ -760,27 +937,24 @@ def run_comparison(topic, section):
     """
 ```
 
-### 7.14 `app/report/section_writer.py` — 章节撰写（含引用）
+### 9.16 `app/report/section_writer.py` — 章节撰写（含引用 + v0.4 Prompt 升级）
 
 ```python
-def write_section(project_id: str, section_title: str) -> str:
-    """基于 RAG 检索上下文，生成带学术级引用的章节正文"""
-    retriever = HybridRetriever(project_id)
-    docs = retriever.retrieve(section_title, k=5)
-    context, citations = build_context_with_citations(docs)
-
-    system_prompt = """你是一名资深产品经理。使用提供的参考资料撰写章节。
-    规则：1) 必须使用 [^n] 格式引用资料 2) 每条关键数据必须有出处"""
-
-    llm = get_llm(temperature=0.7)
-    response = llm.invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=f"## {section_title}\n\n参考资料：\n{context}")
-    ])
-    return response.content
+def _write_text_section(topic, section_title, project_id, template_type, search_depth):
+    """RAG 检索 → LLM 深度撰写 → 引用溯源"""
+    docs = retrieve(f"{topic} {section_title}", k=retriever_k, project_id=project_id)
+    context_str, ref_map = build_context_with_citations(docs)
+    # v0.4: Prompt 规则 5 升级为三重禁令 ——
+    #   绝不允许 CSV 格式！
+    #   绝不允许引号 " " 包围单元格内容！
+    #   绝不允许 "The following table:" 前缀废话！
+    # 格式严控：段落 ≤3 行/80 字、Bullet points、Markdown 表格
 ```
 
-### 7.15 `app/report/pdf_generator.py` — 16:9 横版 PDF
+**v0.4 Prompt 终极限制**: 规则 5 从建议性改为严厉禁令，三重杜绝 LLM 输出 CSV 伪表格。
+**多模态路由**: `_is_image_section()` 检测「生图/图鉴/概念图」关键词 → 硅基流动图像生成引擎。
+
+### 9.17 `app/report/pdf_generator.py` — 16:9 横版 PDF
 
 ```python
 def markdown_to_pdf(md_content: str, project_id: str, topic: str) -> str:
@@ -803,7 +977,7 @@ def markdown_to_pdf(md_content: str, project_id: str, topic: str) -> str:
     return pdf_path
 ```
 
-### 7.16 `app/report/markdown_formatter.py` — Markdown 报告组装
+### 9.18 `app/report/markdown_formatter.py` — Markdown 报告组装
 
 ```python
 def build_report(title: str, sections: list) -> str:
@@ -814,7 +988,7 @@ def build_report(title: str, sections: list) -> str:
     return report
 ```
 
-### 7.17 `app/retrieval/research_pipeline.py` — CLI 研究流水线
+### 9.19 `app/retrieval/research_pipeline.py` — CLI 研究流水线
 
 ```python
 def research_topic(query: str):
@@ -826,7 +1000,7 @@ def research_topic(query: str):
     return collected_docs
 ```
 
-### 7.18 `app/orchestrator/workflow.py` — 端到端流程
+### 9.20 `app/orchestrator/workflow.py` — 端到端流程
 
 ```python
 def run_workflow(topic: str) -> dict:
@@ -848,11 +1022,11 @@ def run_workflow(topic: str) -> dict:
     return {"outline": outline, "sections": written, "pdf": pdf}
 ```
 
-### 7.19 `app/shared/outline_parser.py` — Markdown 大纲解析（副本）
+### 9.21 `app/shared/outline_parser.py` — Markdown 大纲解析（副本）
 
 与 `backend/app/shared/outline_parser.py` 功能一致，供 app 层独立运行时使用。
 
-### 7.20 `app/shared/time_utils.py` — 统一 UTC 时间戳
+### 9.22 `app/shared/time_utils.py` — 统一 UTC 时间戳
 
 ```python
 def utcnow() -> datetime:
@@ -863,11 +1037,19 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 ```
 
+### 9.23 备份/实验版本
+
+| 文件 | 说明 |
+|------|------|
+| `app/llm/client01.py` | LLM 客户端早期版本备份 |
+| `app/report/pdf_generator01.py` | PDF 生成器早期版本备份 |
+| `app/report/section_writer01.py` | 章节撰写器早期版本备份 |
+
 ---
 
-## 8. 前端架构 (frontend/src/)
+## 10. 前端架构 (frontend/src/)
 
-### 8.1 `main.tsx` — React 入口
+### 10.1 `main.tsx` — React 入口
 
 ```tsx
 const queryClient = new QueryClient({
@@ -884,55 +1066,84 @@ createRoot(document.getElementById("root")!).render(
 );
 ```
 
-### 8.2 `App.tsx` — 路由定义
+### 10.2 `App.tsx` — 路由定义
 
 ```tsx
 <Routes>
-  <Route path="/" element={<Layout />}>
+  <Route element={<Layout />}>
     <Route index element={<DashboardPage />} />
     <Route path="projects/:id/workspace" element={<WorkspacePage />} />
     <Route path="projects/:id/progress" element={<ProgressPage />} />
     <Route path="projects/:id/report" element={<ReportPage />} />
+    <Route path="*" element={<Navigate to="/" replace />} />
   </Route>
+  {/* v0.3: EditorPage 独立路由 —— 全屏沉浸式 Canvas 编辑器 */}
+  <Route path="projects/:id/editor" element={<EditorPage />} />
 </Routes>
 ```
 
-### 8.3 页面组件
+### 10.3 页面组件
 
 | 文件 | 作用 |
 |------|------|
 | `pages/DashboardPage.tsx` | 首页仪表盘：项目列表 + 创建新项目 |
-| `pages/WorkspacePage.tsx` | **核心页面**：三栏工作台（大纲树 + 中心面板 + 右侧面板） |
+| `pages/WorkspacePage.tsx` | **项目管理页** (~450 行)：大纲审核、资料筛选、状态监控、"进入编辑器"入口 |
+| `pages/EditorPage.tsx` | 🆕 **Canvas 编辑器页** (~300 行)：全屏沉浸式幻灯片编辑器（React-Konva + AI 面板） |
 | `pages/ProgressPage.tsx` | 项目执行进度全屏视图（实时任务状态 + 时间轴） |
 | `pages/ReportPage.tsx` | 最终报告预览页（Markdown 渲染 + 引用角标） |
 
-### 8.4 `pages/WorkspacePage.tsx` — 三栏工作台（核心页面）
+### 10.4 `pages/WorkspacePage.tsx` — 项目管理工作台（~450 行，v0.3 精简）
 
-```tsx
-function WorkspacePage() {
-  const { data: status } = useProjectStatus(id);  // 3 秒轮询
-  const { blocks, isStreaming } = useEditorSync(id);
+**v0.3 重构**: Canvas 编辑功能迁移到专用 `EditorPage`，WorkspacePage 回归纯项目管理职责。
 
-  // 根据状态机状态渲染不同组件
-  const CenterPanel = () => {
-    if (status?.project_status === "waiting_for_sources")
-      return <SourcesReview projectId={id} />;
-    if (status?.project_status === "waiting_for_outline")
-      return <OutlineApproval projectId={id} />;
-    return <BlockEditor projectId={id} blocks={blocks} />;
-  };
+**三栏布局**:
 
-  return (
-    <ThreePaneLayout
-      left={<OutlineTree sections={...} />}
-      center={<CenterPanel />}
-      right={<RightPanel />}
-    />
-  );
-}
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ThreePaneLayout                                             │
+│  ┌──────────┬──────────────────────────┬────────────────┐    │
+│  │ 大纲目录 │  状态面板                │  日志 / 引用   │    │
+│  │          │  - ProgressTracker       │                │    │
+│  │          │  - SourcesReview ← 审核  │                │    │
+│  │          │  - OutlineApproval ← 拦截 │                │    │
+│  │          │  - 🎨 进入 Canvas 编辑器  │                │    │
+│  └──────────┴──────────────────────────┴────────────────┘    │
+│                                                               │
+│  顶部工具栏: [⬅返回] [📎上传] [模板选择] [状态标签]          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### 8.5 通用组件 (`components/common/`)
+**核心变更 (v0.3)**:
+- ❌ 移除 CanvasSlideEditor 嵌入（太拥挤）
+- ✅ drafting/completed 阶段显示状态卡片 + "进入 Canvas 编辑器"按钮
+- ✅ 按钮导航到 `/projects/:id/editor`
+
+### 10.5 `pages/EditorPage.tsx` — Canvas 沉浸式编辑器（🆕 v0.3）
+
+全屏独立路由，不嵌入 Layout 壳，提供专注的幻灯片编辑体验。
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ ← 返回工作台 │ 主题名 │ [导出 PDF] │ 页码 │ 🤖 AI 面板  │
+├──────────┬───────────────────────────────┬───────────────┤
+│ 缩略图   │                              │  AI 助手      │
+│ 列表     │   Fabric.js Canvas            │  (可折叠)     │
+│          │   1280×720 (16:9)            │               │
+│ [封面]   │                              │  对话 +       │
+│ [P1]     │   拖拽编辑 · 双击文字          │  应用到画布   │
+│ [P2]     │   添加图片 · Delete 删除       │               │
+│ [+添加]  │                              │               │
+└──────────┴───────────────────────────────┴───────────────┘
+```
+
+**核心功能**:
+- 从 REST API 拉取 blocks → `convertBlocksToKonvaSlides()` → 幻灯片数组
+- 嵌入 `CanvasSlideEditor` 组件
+- jsPDF 前端导出（`capturePage` 离屏渲染 → dataURL → addImage）
+- AI 助手面板：SSE 流式对话 + "应用到画布"（文本/图片）
+- 使用 CanvasSlideEditor 暴露的 `editorApi.addText()` / `editorApi.addImage()` 方法
+
+### 10.5 通用组件 (`components/common/`)
 
 | 文件 | 作用 |
 |------|------|
@@ -942,7 +1153,7 @@ function WorkspacePage() {
 | `input.tsx` | 通用输入框组件 |
 | `popover.tsx` | Radix UI 弹出层封装 |
 
-### 8.6 布局组件 (`components/layout/`)
+### 10.6 布局组件 (`components/layout/`)
 
 | 文件 | 作用 |
 |------|------|
@@ -950,7 +1161,7 @@ function WorkspacePage() {
 | `Sidebar.tsx` | 侧边栏导航（项目列表 + Logo + 新建按钮） |
 | `ThreePaneLayout.tsx` | 三栏可拖拽布局（左/中/右比例可调） |
 
-### 8.7 项目组件 (`components/projects/`)
+### 10.7 项目组件 (`components/projects/`)
 
 | 文件 | 作用 |
 |------|------|
@@ -961,54 +1172,84 @@ function WorkspacePage() {
 | `OutlineApproval.tsx` | 大纲审核面板（用户确认/编辑 AI 生成的大纲） |
 | `TerminalTimeline.tsx` | 终端风格实时日志流（基于 ProjectLog 模型渲染） |
 
-### 8.8 编辑器组件 (`components/editor/`)
+### 10.8 编辑器组件 (`components/editor/`)
 
-**`BlockEditor.tsx`** — Tiptap 块级编辑器：
+**🆕 `CanvasSlideEditor.tsx`** — React-Konva 幻灯片编辑器（v0.3 核心组件，v0.4 Konva 替代 Fabric.js）：
 
 ```tsx
-function BlockEditor({ blocks }: { blocks: EditorBlock[] }) {
-  const editor = useEditor({
-    extensions: [StarterKit, Underline, Placeholder, CitationMark, InlineAIBubble],
-    content: blocksToContent(blocks),  // DocumentBlock[] → ProseMirror JSON
-    editable: true,
-  });
-  return <EditorContent editor={editor} />;
+function CanvasSlideEditor({ slides, activeIndex, onActiveIndexChange,
+    onSlidesChange, canvasRef, readOnly, showToolbar }: Props) {
+  // React-Konva Stage + Layer 架构
+  // Transformer 选中框 + 拖拽缩放 (KeepRatio=false, 8锚点)
+  // 双击文字编辑 (Html textarea 悬浮层)
+  // 表格单元格双击编辑 + 行列控制面板 (TableControlPanel)
+  // Circle / Line 图形渲染 + 颜色拾取器
+  // 排版按钮 (Bold/Italic/Underline/Align)
+  // 图层排序 (上移/下移) + Ctrl+C/V 复制粘贴 + Undo-Redo
+  // 暴露 editorApi: { addText, addImage } 给父组件
+  // capturePage: 原生 Konva 离屏渲染 → JPEG dataURL (92% 质量)
 }
 ```
 
-**`InlineAIBubble.tsx`** — 悬浮 AI 菜单：
+**核心能力**:
+- 左侧缩略图列表（支持排序/删除/添加页面）
+- 中央 React-Konva Stage（1280×720，16:9 自适应缩放）
+- 增强工具栏：文本、图片、圆形、直线、表格 + 颜色拾取器 + 排版控制 + 图层排序
+- 键盘快捷键：Delete 删除、Ctrl+C/V 复制粘贴、Ctrl+Z/Y 撤销重做
+- 内部状态管理 + 防循环同步机制 (isInternalChange ref)
+- v0.4: RenderImage Contain 等比缩放（`Math.min(w/imgW, h/imgH)` + 居中）
+
+**`BlockEditor.tsx`** — ⚠️ 已废弃（v0.3 起由 CanvasSlideEditor 替代）：
+  原 Tiptap 块级编辑器，每 block 一个独立 Tiptap 实例，16:9 CSS 模拟幻灯片。
+
+**`InlineAIBubble.tsx`** — ⚠️ 已废弃（Tiptap BubbleMenu，不再使用）：
+  悬浮 AI 改写在 Canvas 架构中由 AI 助手面板的"应用到画布"按钮替代。
+
+**`extensions/CitationMark.ts`** — Tiptap 自定义 Mark 扩展（保留）
+
+**`extensions/Citation.tsx`** — 引用角标 React 组件（保留）
+
+### 10.9 数据转换层 (`lib/dataTransform.ts`) 🆕 v0.3 → v0.4 根治
 
 ```tsx
-function InlineAIBubble({ editor, projectId }: Props) {
-  const handleRevise = async (instruction: string) => {
-    const { from, to } = editor.state.selection;
-    const selectedText = editor.state.doc.textBetween(from, to);
-    const result = await editorApi.revise({ ... });
-    showDiff({ original: selectedText, revised: result.revised_text });
-  };
-
-  return (
-    <BubbleMenu editor={editor}>
-      <button onClick={() => handleRevise("polish")}>✨ 润色</button>
-      <button onClick={() => handleRevise("expand")}>📝 扩写</button>
-      <button onClick={() => handleRevise("simplify")}>🔍 精简</button>
-      <input placeholder="自定义指令..." onKeyDown={...} />
-    </BubbleMenu>
-  );
+export function convertBlocksToKonvaSlides(
+  topic: string,
+  blocks: Pick<DocumentBlockResponse, 'section_title' | 'content' | 'order_index'>[],
+  logoUrl?: string,
+): KonvaSlide[] {
+  // Slide 0: 封面（深色背景 #0f1117 + 品牌色装饰 + 大标题 + 日期）
+  // Slide 1..N: marked AST 解析 → 前瞻式分页引擎 → CanvasElement[]
+  // 每个 token 通过 processToken() 内部闭环累加 currentY（v0.4 根治双重累加）
 }
 ```
 
-**`DiffViewNode.tsx`** — AI 修订 Diff 对比视图，展示原文 vs 润色后文本的差异高亮。
+**v0.4 排版引擎根治（fix_draft03.md）**:
 
-**`extensions/CitationMark.ts`** — ProseMirror 自定义 Mark：将 `[^n]` 引用标记渲染为可点击的蓝色角标徽章。
+| 修复项 | 说明 |
+|--------|------|
+| **双重累加消除** | `processToken` 返回 `void`（原返回 `consumedY` 导致外层 `+=` 再次累加），内部直接 `state.currentY += h` |
+| **空页断层防护** | 翻页条件增加 `state.currentY > START_Y`，禁止空页强制翻页 |
+| **Logo URL 解析** | `buildSlideDecor` 中 `src: resolveImageUrl(logoUrl)` + `push`（修复 z-order 遮挡） |
+| **幽灵页正则升级** | `extractCitations` 匹配 `#{1,6}` 任意级别标题 + 中英文关键词（参考资料/参考来源/参考文献/资料来源/References） |
+| **CSV 引号剥离** | `case 'table'` 中 header/rows 强制 `.replace(/^"\|"$/g, '').trim()` |
+| **脚标平滑展示** | `stripMarkdown` 追加 `.replace(/\[\^(\d+)\]/g, '[$1]')` |
+| **Logo Contain 缩放** | Logo 容器 160×60（原 100×40），`safeX` 同步调整为 220 |
 
-**`extensions/Citation.tsx`** — 引用角标 React 组件：点击后弹出引用来源卡片（URL + 摘要）。
+**v0.3 基础架构**:
+- 中文精准高度估算 (行宽系数 0.85，行高倍率 1.3)
+- 动态安全区 (`computeLayout`: logoUrl ? 220 : 60)
+- 引用框视觉升级（背景色块 + 左侧蓝色竖条）
+- 列表圆形子弹点（Circle 替代 • 文本前缀）
+- 段落图片捕获 (`tryRenderParagraphImages`: 返回 boolean)
+- 前瞻式分页算法（标题 + 后续内容联合判页）
+- 页尾引用渲染 (`appendCitationFooter`)
 
-### 8.9 报告组件 (`components/report/`)
+
+### 10.9 报告组件 (`components/report/`)
 
 **`CitationMarkdown.tsx`** — 增强 Markdown 渲染器，将正文中的 `[^n]` 引用标记自动渲染为可交互的引用角标，点击弹出引用来源详情。
 
-### 8.10 自定义 Hooks
+### 10.10 自定义 Hooks
 
 | Hook | 作用 |
 |------|------|
@@ -1019,7 +1260,7 @@ function InlineAIBubble({ editor, projectId }: Props) {
 | `useEditorSync.ts` | 编辑器内容与后端 DocumentBlock 双向同步 |
 | `useCitationStore.ts` | 引用数据全局状态管理（ref_num → {title, url, snippet}） |
 
-### 8.11 `hooks/useProjectStatus.ts` — 状态感知轮询
+### 10.11 `hooks/useProjectStatus.ts` — 状态感知轮询
 
 ```tsx
 function useProjectStatus(id: string) {
@@ -1038,7 +1279,7 @@ function useProjectStatus(id: string) {
 }
 ```
 
-### 8.12 `hooks/useDraftStream.ts` — SSE 流式接收
+### 10.12 `hooks/useDraftStream.ts` — SSE 流式接收
 
 ```tsx
 function useDraftStream(projectId: string, onChunk: (block: SSEDraftEvent) => void) {
@@ -1054,42 +1295,73 @@ function useDraftStream(projectId: string, onChunk: (block: SSEDraftEvent) => vo
 }
 ```
 
-### 8.13 `lib/api.ts` — API 服务层
+### 10.13 `lib/api.ts` — API 服务层
 
 ```tsx
 const projectsApi = {
-  create: (topic: string) =>
-    api.post("/projects", { topic }).then(r => r.data),
-  getStatus: (id: string) =>
-    api.get(`/projects/${id}/status`).then(r => r.data),
+  create: (topic: string) => api.post("/projects", { topic }).then(r => r.data),
+  getStatus: (id: string) => api.get(`/projects/${id}/status`).then(r => r.data),
   approveOutline: (id: string, outline: string) =>
     api.post(`/projects/${id}/approve-outline`, { outline }),
   reviewSources: (id: string, selected_urls: string[]) =>
     api.post(`/projects/${id}/review-sources`, { selected_urls }),
+  getSources: (id: string) => api.get(`/projects/${id}/sources`).then(r => r.data),
+  getBlocks: (id: string) => api.get(`/projects/${id}/blocks`).then(r => r.data),
+  getContent: (id: string) => api.get(`/projects/${id}/content`).then(r => r.data),
+  getLogs: (id: string, afterSequence = 0) =>
+    api.get(`/projects/${id}/logs?after_sequence=${afterSequence}`).then(r => r.data),
+  getDownload: (id: string) => api.get(`/projects/${id}/download`).then(r => r.data),
+  delete: (id: string) => api.delete(`/projects/${id}`).then(r => r.data),
+  // 🆕 本地上传
+  uploadDocs: async (projectId: string, files: FileList | File[]) => { ... },
+  // 🆕 手动导出 PDF
+  exportPdf: (projectId: string, data: ExportPdfRequest) =>
+    api.post(`/projects/${projectId}/export-pdf`, data).then(r => r.data),
 };
 
 const editorApi = {
-  revise: (body: EditorReviseRequest) =>
-    api.post("/editor/revise", body).then(r => r.data),
+  revise: (body: EditorReviseRequest) => api.post("/editor/revise", body).then(r => r.data),
+  // 🆕 SSE 流式对话
+  chat: async (data: EditorChatRequest): Promise<Response> => {
+    const res = await fetch(`${API_BASE}/editor/chat`, { method: 'POST', ... });
+    return res;  // 调用方通过 ReadableStream 读取 SSE
+  },
 };
 ```
 
-### 8.14 `lib/utils.ts` — 通用工具函数
+### 10.14 `lib/utils.ts` — 通用工具函数
 
 日期格式化、UUID 截断、状态标签映射等 UI 辅助函数。
 
-### 8.15 `types/` — TypeScript 类型定义
+### 10.15 类型定义 (`types/`)
 
 | 文件 | 作用 |
 |------|------|
-| `types/api.ts` | API 请求/响应类型（`ProjectCreateRequest`, `ProjectStatusResponse`, `SSEDraftEvent` 等） |
-| `types/index.ts` | 通用 UI 类型（`EditorBlock`, `ProgressStep`, `LogEntry` 等） |
+| `types/api.ts` | API 请求/响应类型（290+ 行，含 `ProjectStatusEnum`, `TaskTypeEnum`, `TaskStatusEnum`, `SSEDraftEvent`, `SourceItem`, `ProjectLogResponse`, `SectionContent`, `EditorChatRequest`, `EditorChatMessage`, `ExportPdfRequest`, `UploadDocsResponse`, `STATE_MACHINE_STEPS`, `PROGRESS_STEPS` 等） |
+| `types/index.ts` | 通用 UI 类型（`EditorBlock`, `ProgressStep`, `LogEntry`, `RightPanelView` 等） |
+
+### 10.16 样式与配置
+
+| 文件 | 作用 |
+|------|------|
+| `styles/globals.css` | Tailwind CSS 全局样式 |
+| `vite-env.d.ts` | Vite 环境类型声明 |
+
+### 10.17 前端配置文件
+
+| 文件 | 作用 |
+|------|------|
+| `package.json` | 依赖管理（React 18, Fabric.js, jsPDF, Tiptap [保留], Radix UI, Tailwind CSS 等） |
+| `vite.config.ts` | Vite 构建配置（含 API 代理到 localhost:8000） |
+| `tailwind.config.ts` | Tailwind CSS 主题配置 |
+| `tsconfig.json` | TypeScript 编译配置 |
+| `postcss.config.js` | PostCSS 配置（Tailwind CSS 插件） |
 
 ---
 
-## 9. 数据模型 (backend/app/models/)
+## 11. 数据模型 (backend/app/models/)
 
-### 9.1 模型关系
+### 11.1 模型关系
 
 ```
 User (1) ──< (N) Project (1) ──< (N) Task
@@ -1099,7 +1371,7 @@ User (1) ──< (N) Project (1) ──< (N) Task
                     └──< (N) ProjectLog       (时间轴日志)
 ```
 
-### 9.2 `base.py` — 声明式基类
+### 11.2 `base.py` — 声明式基类
 
 ```python
 class Base(DeclarativeBase):
@@ -1121,7 +1393,7 @@ def orm_to_dict(obj: Base) -> dict:
     return result
 ```
 
-### 9.3 `user.py` — 用户
+### 11.3 `user.py` — 用户
 
 ```python
 class User(Base):
@@ -1134,7 +1406,7 @@ class User(Base):
 
 > 当前为简化版，仅作为 Project 的外键引用，不涉及完整的认证/授权流程。
 
-### 9.4 `project.py` — 项目 + 状态枚举
+### 11.4 `project.py` — 项目 + 状态枚举
 
 ```python
 class ProjectStatus(str, enum.Enum):
@@ -1160,7 +1432,7 @@ class Project(Base):
     updated_at      = mapped_column(DateTime(timezone=True), nullable=True)
 ```
 
-### 9.5 `task.py` — 任务
+### 11.5 `task.py` — 任务
 
 ```python
 class TaskType(str, enum.Enum):
@@ -1191,7 +1463,7 @@ class Task(Base):
     error_message  = mapped_column(Text, nullable=True)
 ```
 
-### 9.6 `document_block.py` — 原子化内容块
+### 11.6 `document_block.py` — 原子化内容块
 
 ```python
 class DocumentBlock(Base):
@@ -1205,7 +1477,7 @@ class DocumentBlock(Base):
     created_at    = mapped_column(DateTime(timezone=True), server_default=func.now())
 ```
 
-### 9.7 `document.py` — 章节文档快照
+### 11.7 `document.py` — 章节文档快照
 
 ```python
 class Document(Base):
@@ -1222,7 +1494,7 @@ class Document(Base):
 
 > **Document vs DocumentBlock**: Document 是完整章节的一次性快照（用于报告全文组装），DocumentBlock 是流式撰写的原子化编辑块（SSE 逐块推送，Tiptap 实时渲染）。
 
-### 9.8 `project_log.py` — 项目时间轴日志
+### 11.8 `project_log.py` — 项目时间轴日志
 
 ```python
 class LogLevel(str, enum.Enum):
@@ -1246,7 +1518,7 @@ class ProjectLog(Base):
 
 ---
 
-## 10. 状态机流转全景
+## 12. 状态机流转全景
 
 ```
 用户创建项目
@@ -1262,11 +1534,14 @@ PREPARING_DATA ──(Celery: 搜索+抓取)──▶ WAITING_FOR_SOURCES  🛑
                                                                       POST /approve-outline  (用户确认大纲)
                                                                                        │
                                                                                        ▼
-                                                                              DRAFTING ──(Celery: 逐章撰写+组装+PDF)──▶ COMPLETED ✅
+                                                                              DRAFTING ──(Celery: 逐章撰写)──▶ COMPLETED ✅
                                                                                  │
                                                                                  │ SSE stream-draft
                                                                                  ▼
-                                                                         [前端 Tiptap 流式渲染]
+                                                                         [前端 Canvas 流式渲染]
+
+v0.3: DRAFTING→COMPLETED 仅代表"草稿就绪，等待用户进入编辑器排版后手动导出 PDF"
+     PDF 导出完全由前端 jsPDF + Fabric.js Canvas 接管（100% 所见即所得）
 ```
 
 ### 关键设计决策
@@ -1276,11 +1551,19 @@ PREPARING_DATA ──(Celery: 搜索+抓取)──▶ WAITING_FOR_SOURCES  🛑
 | Celery `--pool=threads` | Windows Python 3.14 `spawn` 多进程导致 `trace._localized` 崩溃 |
 | SQLite NullPool + WAL | 单文件开发库，WAL 提升并发读写，NullPool 避免连接池冲突 |
 | SSE 轮询而非 WebSocket | 简化部署（无需额外 WS 服务器），2 秒间隔可接受 |
+| 🆕 React-Konva + Transformer | Stage/Layer 架构，Konva 原生 Transformer 选中框，8锚点拖拽缩放，离屏渲染导出 JPG |
+| 🆕 marked AST 解析 + 前瞻分页 | 词法分析 token 流 → 精确高度预估 → processToken 内部闭环累加（v0.4 根治双重累加） |
+| 🆕 RenderImage Contain 缩放 | `Math.min(w/imgW, h/imgH)` 等比缩放 + 居中，杜绝 Konva Image 默认拉伸 |
+| 💀 Fabric.js v6.9.x 模块级缓存 | ~~`getFabricModule()` 避免重复动态 import，canvas DOM 始终挂载消除初始化死锁~~ (v0.4 已替换为 React-Konva) |
 | `orm_to_dict()` 手动转换 | 避免 Pydantic `from_attributes=True` 的嵌套序列化陷阱 |
 | Chroma + BM25 双引擎 + RRF | 向量检索覆盖语义，BM25 覆盖关键词精确匹配，RRF 融合最优排序 |
 | Per-project 向量库子目录 | 杜绝多项目并发时的数据互相覆盖 |
 | Query Planning + Baseline 对比 | LLM 拆解宽泛标题为高密度关键词，召回质量显著优于直接检索 |
-| 16:9 横版 PDF | WeasyPrint + CSS `@page size: 1440px 810px` 精确控制输出 |
+| 16:9 横版 PDF | ~~WeasyPrint~~ → 🆕 jsPDF 前端直接导出（Fabric Canvas → PNG → PDF），100% 所见即所得 |
+| Canvas 幻灯片替代 Tiptap | React-Konva 提供绝对坐标拖拽、图文混排、多页缩略图，彻底解决 DOM 排版崩溃 |
+| WorkspacePage → EditorPage 分离 | 项目管理与 Canvas 编辑分页，避免页面拥挤，全屏沉浸式编辑体验 |
+| 前端接管 PDF 导出 | 后端 Phase 3 不再生成 PDF，DRAFTING→COMPLETED 仅代表"草稿就绪"，导出由前端 jsPDF 完成 |
+| dataTransform 封面生成 | 后端 blocks 不含封面，前端转换层强制生成 Slide 0（深色背景 + 品牌装饰 + 大标题） |
 | Redis 容器化部署 | 避免 WSL sudo 权限问题，`--restart unless-stopped` 保活 |
 | 状态感知轮询停止 | 交互节点/终态自动停轮询，减少不必要的网络请求 |
 | ProjectRepo 同步仓库 | 消除任务中散落的 raw SQL 和 `asyncio.run()`，统一 Celery 数据访问 |
@@ -1289,22 +1572,84 @@ PREPARING_DATA ──(Celery: 搜索+抓取)──▶ WAITING_FOR_SOURCES  🛑
 | `utcnow()` 统一时间戳 | 杜绝散落的 naive `datetime.now()`，确保全项目 UTC 一致性 |
 | `main.py` 双路径注入 (`sys.path`) | 同时加入 `backend/` 和项目根目录，桥接 `backend/app/` 与项目根 `app/` 两套包体系，使 RAG/搜索/爬虫等研究引擎模块可从后端代码直接 import |
 | `/editor/chat` RAG 上下文注入 | work 模式自动调用 `retrieve_context()` 从 Chroma + BM25 召回 Top-5 切片注入 LLM 上下文，打通"上传 PDF → 切片入库 → 对话检索"完整链路 |
+| 🆕 PyMuPDF 本地 PDF 解析 | 替代需要 API Key 的云端解析方案，用户上传 PDF 后本地提取文本 → 切片 → 入库 |
+| 🆕 DuckDuckGo 图片搜索 | 免 API Key 的图片搜索，可搜索产品相关图片素材 |
+| 🆕 Alembic 数据库迁移 | 版本化 schema 管理，支持升级/回滚，生产部署必备 |
+| 🆕 `/editor/chat` vs `/editor/revise` 双通道 | chat 用于开放式对话（SSE 流式），revise 用于精确文本改写（一次性返回） |
 
 ---
 
-## 11. 测试与评测
+## 13. 测试与评测
 
-### 11.1 `tests/eval_retrieval.py` — 检索质量评测
+### 13.1 `tests/eval_retrieval.py` — 检索质量评测
 
 评测混合检索引擎（Chroma + BM25 + RRF）在不同查询类型下的召回率、精确率和 MRR。
 
-### 11.2 `tests/eval_ranking.py` — 排序质量评测
+### 13.2 `tests/eval_ranking.py` — 排序质量评测
 
 评测 Query Planning vs 原始检索的排序效果对比，验证 RRF 融合权重和 Query Planning 的收益。
 
-### 11.3 `tests/eval_citation.py` — 引用质量评测
+### 13.3 `tests/eval_citation.py` — 引用质量评测
 
 评测引用溯源引擎的准确率：生成的 `[^n]` 脚注是否正确关联到对应的来源 URL 和内容片段。
+
+### 13.4 `backend/tests/` — 后端单元/集成测试
+
+详见 [第 8 节：后端测试套件](#8-后端测试套件-backendtests)：
+- `test_imports.py` — 模块导入 + 基础功能验证
+- `test_state_machine.py` — 状态机枚举/约束验证
+- `test_outline_parser.py` — 大纲解析 9 个测试用例
+- `test_api_integration.py` — 14 个 API 集成测试（健康检查、CRUD、状态机流转、Schema 校验、编辑器 AI）
+
+---
+
+## 14. 运维工具脚本
+
+### 14.1 `backend/fix_project.py` — 数据库诊断与修复
+
+```bash
+python fix_project.py                    # 列出所有项目状态
+python fix_project.py --fix <project_id> # 修复卡住的项目（重置 FAILED 任务 → COMPLETED）
+python fix_project.py --reset <project_id> # 重置项目到初始状态
+python fix_project.py --verify           # 验证数据库完整性（孤儿任务/文档块/卡住项目）
+```
+
+### 14.2 `backend/fix_stuck_projects.py` — 僵死项目批量修复
+
+识别并重置卡在活跃状态的项目（因 Celery 崩溃导致的任务幽灵），重新投递到 Celery 队列。
+
+```python
+async def fix_stuck_projects():
+    """扫描 → 重置状态 → 清理暂存文件 → 重新投递 prepare_sources_workflow"""
+    active_statuses = [PREPARING_DATA, PREPARING_OUTLINE, DRAFTING]
+    for project in stuck_projects:
+        # 重置所有关联任务 → PENDING
+        # 项目状态 → PREPARING_DATA
+        # 清理 crawled_data_{project_id}.json 暂存文件
+        # 重新投递 Celery 任务
+```
+
+### 14.3 `backend/reset_project.py` — 工作流重触发
+
+将项目重置到指定阶段并自动重新触发对应的 Celery 工作流。
+
+```bash
+python reset_project.py <project_id> --stage sources   # 从资料搜集阶段开始
+python reset_project.py <project_id> --stage outline   # 从大纲生成阶段开始
+python reset_project.py <project_id> --stage drafting  # 从撰写阶段开始
+```
+
+### 14.4 `fix/` — 问题修复记录
+
+| 文件 | 内容 |
+|------|------|
+| `fix/fix_start01.md` | 启动问题修复记录 |
+| `fix/day1/fronted.md` | 前端问题修复 |
+| `fix/day1/task1_fix.md` | 任务修复记录 |
+| `fix/day1/task1_local_rag.md` | 本地 RAG 修复 |
+| `fix/day1/task2_core_api.md` | 核心 API 修复 |
+| `fix/day1/task3_img_search.md` | 图片搜索修复 |
+| `fix/day3/fix_draft03.md` | 🆕 v0.4 排版引擎根治方案（双重累加/空页断层/Logo Contain/CSV剥离/Prompt升级） |
 
 ---
 

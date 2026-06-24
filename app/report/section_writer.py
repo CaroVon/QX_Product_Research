@@ -9,6 +9,7 @@ import logging
 import re
 
 from app.llm.client import get_llm, generate_image
+from app.llm.prompts import PromptFactory
 from app.rag.retriever import retrieve
 from app.rag.citation_utils import build_context_with_citations, resolve_and_append_citations
 
@@ -20,21 +21,6 @@ def _safe_topic(topic: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', '_', topic)
 
 
-# ══════════════════════════════════════════════════════════
-# 核心 System Prompt —— 产品研究 Persona
-# ══════════════════════════════════════════════════════════
-PRODUCT_RESEARCHER_SYSTEM_PROMPT = """你是一名顶级商业咨询顾问。请基于提供的参考资料，为产品路演 PPT 撰写当前章节的 Markdown 内容。
-
-【绝对格式红线】（触发将导致系统崩溃）：
-必须 100% 遵守 Markdown 语法，严禁输出任何“好的”、“这是基于...”、“为您撰写”等对话寒暄语或解释性废话。你的输出必须直接以 `## 章节标题` 作为第一个字符！
-
-【排版规则】：
-1. 核心洞察置顶：每个章节（## 标题）下方，必须紧跟一个 Markdown 引用块（>），用2-3句话总结本页的核心商业洞察（Executive Summary）。
-2. 杜绝长篇大论：不要写超过3行的段落！必须使用大量无序列表（-）或有序列表（1.）来拆解逻辑。
-3. 关键信息加粗：使用 **加粗** 突出核心数据和专有名词。
-4. 结构化对比：如果涉及多维度对比或BOM成本，强制输出 Markdown 表格。
-5. 引用规范：必须使用 [^n] 格式标注数据来源。
-"""
 
 
 # ══════════════════════════════════════════════════════════
@@ -92,14 +78,19 @@ def _write_text_section(
     topic: str,
     section_title: str,
     project_id: str | None = None,
+    template_type: str = "product",
+    search_depth: int = 10,
 ) -> str:
     llm = get_llm()
-    logger.info("→ [📝 文本撰写] 正在深度撰写章节【%s】...", section_title)
+    logger.info("→ [📝 文本撰写] 正在深度撰写章节【%s】(template=%s, k=%d)...", section_title, template_type, search_depth)
 
-    docs = retrieve(f"{topic} {section_title}", k=5, project_id=project_id)
+    retriever_k = max(5, search_depth)  # 最少获取 5 篇
+    docs = retrieve(f"{topic} {section_title}", k=retriever_k, project_id=project_id)
     context_str, ref_map = build_context_with_citations(docs)
 
-    prompt = f"""{PRODUCT_RESEARCHER_SYSTEM_PROMPT}
+    sys_prompt = PromptFactory.get_section_prompt(template_type)
+
+    prompt = f"""{sys_prompt}
 
 【产品研究主题】: {topic}
 【当前撰写章节】: {section_title}
@@ -107,7 +98,21 @@ def _write_text_section(
 【参考资料】:
 {context_str}
 
-请直接输出 Markdown 内容，务必从 `## {section_title}` 开始，不要有任何前缀。"""
+请直接输出 Markdown 内容，务必从 `## {section_title}` 开始，不要有任何前缀。
+
+【格式严控要求（为 PPT 排版优化）】：
+1. 必须使用 Markdown 格式。
+2. 严禁长篇大论！每个段落不得超过 3 行（约 80 字），多用 Bullet points (无序列表 - ) 进行观点拆解。
+3. 如有数据对比，强制使用 Markdown 表格输出。
+4. 你的输出将直接转化为幻灯片，请保持内容的高度概括性和排版呼吸感。
+5. 【最高优先级：数据表格规范】如果涉及到对比数据，必须使用标准 Markdown 表格语法（使用 `|` 分隔）。
+绝不允许使用逗号分隔的 CSV 格式！
+绝不允许使用引号 `" "` 包围单元格内容！
+绝不允许输出 "The following table:" 这类前缀废话！
+示例格式：
+| 品牌型号 | 核心技术 | 价格 |
+| :--- | :--- | :--- |
+| 产品A | 追腰技术 | 1000元 |"""
 
     response = llm.invoke(prompt)
     raw_content = response.content
@@ -129,6 +134,8 @@ def write_section(
     topic: str,
     section_title: str,
     project_id: str | None = None,
+    template_type: str = "product",
+    search_depth: int = 10,
 ) -> str:
     """
     撰写单个章节。
@@ -141,6 +148,9 @@ def write_section(
         topic:         产品研究主题
         section_title: 当前章节标题
         project_id:    项目 UUID（用于 per-project 向量库隔离）
+        template_type: 模板类型（"product" 或 "design"），
+                       透传给 PromptFactory 选择对应的 System Prompt
+        search_depth:  搜索强度 (5-20)，控制检索资料数量
 
     Returns:
         Markdown 格式的章节内容。
@@ -148,4 +158,9 @@ def write_section(
     if _is_image_section(section_title):
         return _write_image_section(topic, section_title)
     else:
-        return _write_text_section(topic, section_title, project_id=project_id)
+        return _write_text_section(
+            topic, section_title,
+            project_id=project_id,
+            template_type=template_type,
+            search_depth=search_depth,
+        )
