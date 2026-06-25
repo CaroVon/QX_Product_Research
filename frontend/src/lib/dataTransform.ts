@@ -1,15 +1,16 @@
 /**
  * ============================================================
- * dataTransform —— 数据转换层 (Phase 3 v3)
+ * dataTransform —— 数据转换层 (Phase 3 v5)
  *
- * v3 升级：
- * - 中文精准高度估算（行宽系数 0.85，行高倍率 1.3）
- * - 幽灵页清理（截断 LLM 自动附加的「参考资料」尾部）
- * - Logo 弹性安全区（动态 safeX，无 Logo 时缩小边距）
- * - 引用框视觉升级（背景色块 + 左侧蓝色竖条）
- * - 列表子弹点视觉升级（圆形色块替代 • 文本前缀）
- * - 段落图片捕获（检测内嵌 image token，自动渲染）
- * - 前瞻式分页算法（孤儿标题保护，标题+后续内容联合判页）
+ * v5 重构（商业风格 + 内容密度优化）：
+ * - 商业风格 slide 模板：左侧品牌色条 + 页眉(Logo/标题/页码) + 页脚
+ * - 章节级渲染：配合后端 section-level DocumentBlock，减少碎片页
+ * - 引用页尾优化：分隔线 + 紧凑排版 + 溢出检测
+ * - 目录页：封面后自动插入 TOC 页
+ * - 全局引用编号：跨章节 URL 去重 reconcile
+ * - 双宽度高度估算：CJK/拉丁分别计算，减少提前分页
+ * - 页码渲染：页眉右侧显示 Page N / M
+ * - 移除冗余续页后缀：(续N) → 仅保持原标题
  * ============================================================
  */
 
@@ -34,54 +35,42 @@ export interface KonvaSlide {
 export const CANVAS_WIDTH = 1280
 export const CANVAS_HEIGHT = 720
 
-/** 正文起始 Y（标题 + 分隔线下方） */
-const START_Y = 110
+/** 品牌色系 */
+const BRAND = {
+  primary: '#2d7cf6',    // 主品牌色（科技蓝）
+  primaryLight: '#6366f1', // 前端 accent（indigo，保持兼容）
+  dark: '#0f1117',       // 深色背景
+  heading: '#0f172a',    // 标题色
+  body: '#334155',       // 正文色
+  muted: '#94a3b8',      // 次要文字
+  mutedLight: '#cbd5e1', // 最淡次要
+  divider: '#e2e8f0',    // 细分割线
+  footerBg: '#f1f5f9',   // 页脚背景
+  white: '#ffffff',
+}
 
-/** 正文最大 Y（预留 60px 给页尾引用）；v3 改为 660 减少碎页 */
-const MAX_Y = 660
+// ══════════════════════════════════════════════════════════════
+// 布局常量（v5 商业风格）
+// ══════════════════════════════════════════════════════════════
 
-/** 正文内容宽度（CANVAS_WIDTH - 左右边距） */
-const CONTENT_WIDTH = 1040
-
-/** 正文常规字号 */
+const SIDEBAR_WIDTH = 6          // 左侧品牌色条宽度
+const HEADER_HEIGHT = 56         // 页眉区域高度
+const FOOTER_HEIGHT = 24         // 页脚区域高度
+const CONTENT_START_Y = 68       // 正文起始 Y（页眉分隔线下方）
+const CONTENT_END_Y = 694        // 正文截止 Y（页脚区域上方）
+const CITATION_ZONE_Y = 648      // 引用区起始 Y
+const CONTENT_WIDTH = 1140       // 正文内容宽度（1280 - 左侧边距60 - 右侧边距80）
 const BODY_FONT_SIZE = 18
-
-/** 标题字号 */
 const HEADING_FONT_SIZE = 24
-
-/** 引用块左侧竖条宽度 */
+const CITATION_FONT_SIZE = 12
+const IMAGE_RENDER_WIDTH = 800
+const IMAGE_RENDER_HEIGHT = 450
 const BLOCKQUOTE_BAR_WIDTH = 4
 
-/** 页尾引用字号 */
-const CITATION_FONT_SIZE = 12
-
-/** 页尾引用 Y 坐标 */
-const CITATION_Y = 650
-
-/** 图片默认渲染宽度 */
-const IMAGE_RENDER_WIDTH = 800
-
-/** 图片默认渲染高度（16:9 等比） */
-const IMAGE_RENDER_HEIGHT = 450
-
-// ══════════════════════════════════════════════════════════════
-// 动态布局计算（基于 logoUrl 弹性安全区）
-// ══════════════════════════════════════════════════════════════
-
-interface LayoutParams {
-  safeX: number
-  contentX: number
-  listX: number
-}
-
-function computeLayout(logoUrl?: string): LayoutParams {
-  const safeX = logoUrl ? 220 : 60
-  return {
-    safeX,
-    contentX: safeX + 20,
-    listX: safeX + 40,
-  }
-}
+/** 内容 X 坐标（sidebar 右侧留白后） */
+const CONTENT_X = 60
+/** 列表缩进 X 坐标 */
+const LIST_X = 80
 
 // ══════════════════════════════════════════════════════════════
 // 工具函数
@@ -95,35 +84,38 @@ function genId(): string {
 }
 
 /**
- * 估算文本在 Canvas 中占据的高度（v3 中文精准版）。
+ * 估算文本在 Canvas 中占据的高度（v5 双宽度字符计数版）。
  *
- * 公式：
- *   行数 ≈ ceil(字符数 × (fontSize × 0.85) / 内容宽度)
- *   高度 ≈ 行数 × (fontSize × 1.3)
- *
- * 中文字符宽约 fontSize × 0.85 px（实测修正），
- * 行高倍率 1.3 适配中文排版呼吸感。
+ * 对 CJK 字符和拉丁/数字分别计算宽度，比之前的全中文假设
+ * 更准确，减少对中英混排段落的过高估算和提前分页。
  */
 function estimateTextHeight(text: string, fontSize: number, width: number): number {
-  const charCount = text.replace(/\s/g, '').length || 1
-  const lines = Math.ceil((charCount * (fontSize * 0.85)) / width)
-  return Math.max(lines, 1) * (fontSize * 1.3)
+  let totalCharWidth = 0
+  for (const ch of text) {
+    if (/\s/.test(ch)) {
+      totalCharWidth += fontSize * 0.3
+    } else if (/[一-鿿　-〿＀-￯⺀-⻿㐀-䶿]/.test(ch)) {
+      totalCharWidth += fontSize * 0.95 // CJK 全角字符
+    } else {
+      totalCharWidth += fontSize * 0.55 // 拉丁/数字/标点半角
+    }
+  }
+  const lines = Math.max(Math.ceil(totalCharWidth / width), 1)
+  return lines * (fontSize * 1.35)
 }
 
 /**
  * 预处理：从 Markdown 中提取所有脚注定义 `[^n]: URL`，
- * 存入字典并从原文中删除。同时截断 LLM 自动附加的「参考资料」区域。
+ * 存入字典并从原文中删除。同时截断 LLM 自动附加的参考资料区域。
  */
 function extractCitations(markdown: string): {
   cleanedMarkdown: string
   citationsDict: Record<string, string>
 } {
-  // v3 新增：截断 LLM 自动附加的参考资料尾部（幽灵页修复）
-  markdown = markdown.replace(/(?:^|\n)#{1,6}\s*(参考资料|参考来源|参考文献|资料来源|References)[\s\S]*$/i, '')
-
   const citationsDict: Record<string, string> = {}
-  const regex = /(?:^|\n)\[\^(\d+)\]:\s*(.+)/g
 
+  // Step 1: 优先提取脚注定义 [^n]: text → 存入字典
+  const regex = /(?:^|\n)\[\^(\d+)\]:\s*(.+)/g
   const fragments: Array<{ full: string; id: string; text: string }> = []
   let match: RegExpExecArray | null
   while ((match = regex.exec(markdown)) !== null) {
@@ -134,10 +126,21 @@ function extractCitations(markdown: string): {
     citationsDict[f.id] = f.text
   }
 
+  // Step 2: 清理脚注行 — 从原文中删除提取出来的独立脚注定义行
   let cleaned = markdown
   for (const f of fragments) {
     cleaned = cleaned.replace(f.full, '')
   }
+
+  // Step 3: 幽灵页截断 — 截断 LLM 自作主张生成的尾部参考资料区域
+  // 增强版：同时匹配带和不带 emoji 的变体
+  cleaned = cleaned.replace(
+    /(?:^|\n)#{1,6}\s*[\s📚📖]*[\s]*(参考资料|参考来源|参考文献|资料来源|References|Bibliography)[\s\S]*$/i,
+    '',
+  )
+  // 截断末尾残留的 --- 分隔线
+  cleaned = cleaned.replace(/\n---\n\s*$/, '')
+  cleaned = cleaned.replace(/\n---\s*$/, '')
 
   return { cleanedMarkdown: cleaned.trim(), citationsDict }
 }
@@ -165,7 +168,7 @@ function buildCitationText(
       lines.push(`[${id}] ${text}`)
     }
   }
-  return lines.join('\n')
+  return lines.join('  ')
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -215,10 +218,7 @@ function resolveImageUrl(href: string): string {
     }
   }
 
-  // 编码 URL 中的非 ASCII 字符（如中文文件名），
-  // 但保留已编码的 %xx 和协议/路径分隔符
   try {
-    // 先解码再编码，避免双重编码
     const decoded = decodeURI(resolved)
     return encodeURI(decoded)
   } catch {
@@ -227,117 +227,311 @@ function resolveImageUrl(href: string): string {
 }
 
 // ══════════════════════════════════════════════════════════════
-// 静态装饰元素构建（v3：动态 safeX + Logo 支持）
+// v5 商业风格 slide 装饰构建
 // ══════════════════════════════════════════════════════════════
 
-function buildSlideDecor(sectionTitle: string, layout: LayoutParams, logoUrl?: string): CanvasElement[] {
-  const { safeX, contentX } = layout
+interface SlideDecorParams {
+  sectionTitle: string
+  logoUrl?: string
+  pageNumber?: number
+  totalPages?: number
+}
+
+function buildSlideDecor(params: SlideDecorParams): CanvasElement[] {
+  const { sectionTitle, logoUrl, pageNumber, totalPages } = params
   const elements: CanvasElement[] = []
 
   // 白色背景
   elements.push({
-    id: genId(),
-    type: 'rect',
+    id: genId(), type: 'rect', name: 'decor',
     x: 0, y: 0,
     width: CANVAS_WIDTH, height: CANVAS_HEIGHT,
-    fill: '#ffffff',
+    fill: BRAND.white,
   })
 
-  // 顶部品牌色装饰条（从 safeX 开始）
+  // 左侧品牌色竖条（全高）
   elements.push({
-    id: genId(),
-    type: 'rect',
-    x: safeX, y: 0,
-    width: CANVAS_WIDTH - safeX, height: 5,
-    fill: '#6366f1',
+    id: genId(), type: 'rect', name: 'decor',
+    x: 0, y: 0,
+    width: SIDEBAR_WIDTH, height: CANVAS_HEIGHT,
+    fill: BRAND.primary,
   })
 
-  // 章节标题
-  elements.push({
-    id: genId(),
-    type: 'text',
-    x: contentX, y: 40,
-    width: CANVAS_WIDTH - contentX - 80, height: 50,
-    text: sectionTitle,
-    fontSize: HEADING_FONT_SIZE,
-    fontWeight: 'bold',
-    fill: '#0f172a',
-  })
+  // ── 页眉区域 ──
 
-  // 标题下方分隔线
-  elements.push({
-    id: genId(),
-    type: 'rect',
-    x: contentX, y: 95,
-    width: 120, height: 3,
-    fill: '#6366f1',
-  })
-
-  // Logo 图片（如果有，放在左上角安全区内）
+  // Logo（如果有）
   if (logoUrl) {
     elements.push({
-      id: genId(),
-      type: 'image',
+      id: genId(), type: 'image', name: 'decor',
       src: resolveImageUrl(logoUrl),
-      x: 40, y: 15,
-      width: 160, height: 60,
+      x: 24, y: 8,
+      width: 40, height: 40,
     })
   }
+
+  // 章节标题
+  const titleX = logoUrl ? 80 : CONTENT_X
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: titleX, y: 14,
+    width: CANVAS_WIDTH - titleX - 160, height: 36,
+    text: sectionTitle,
+    fontSize: 20,
+    fontWeight: 'bold',
+    fill: BRAND.heading,
+  })
+
+  // 页码（右侧）
+  if (pageNumber !== undefined) {
+    const pageText = totalPages ? `${pageNumber} / ${totalPages}` : `${pageNumber}`
+    elements.push({
+      id: genId(), type: 'text', name: 'decor',
+      x: CANVAS_WIDTH - 140, y: 18,
+      width: 120, height: 24,
+      text: pageText,
+      fontSize: 12,
+      fill: BRAND.muted,
+      align: 'right',
+    })
+  }
+
+  // 页眉分隔线（品牌色，全宽）
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: SIDEBAR_WIDTH, y: HEADER_HEIGHT,
+    width: CANVAS_WIDTH - SIDEBAR_WIDTH, height: 2,
+    fill: BRAND.primary,
+  })
+
+  // ── 页脚区域 ──
+  const footerY = CANVAS_HEIGHT - FOOTER_HEIGHT
+
+  // 页脚背景
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: SIDEBAR_WIDTH, y: footerY,
+    width: CANVAS_WIDTH - SIDEBAR_WIDTH, height: FOOTER_HEIGHT,
+    fill: BRAND.footerBg,
+  })
+
+  // 页脚左侧文字
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: CONTENT_X, y: footerY + 4,
+    width: 400, height: 16,
+    text: 'CONFIDENTIAL · 产品深度研究',
+    fontSize: 9,
+    fill: BRAND.muted,
+  })
+
+  // 页脚右侧品牌色点
+  elements.push({
+    id: genId(), type: 'circle', name: 'decor',
+    x: CANVAS_WIDTH - 80, y: footerY + 8,
+    width: 8, height: 8,
+    radius: 4,
+    fill: BRAND.primary,
+  })
 
   return elements
 }
 
 // ══════════════════════════════════════════════════════════════
-// 封面页构建
+// 封面页构建（v5 增强版）
 // ══════════════════════════════════════════════════════════════
 
 function buildCoverSlide(topic: string): CanvasElement[] {
-  return [
-    {
-      id: genId(), type: 'rect',
-      x: 0, y: 0,
-      width: CANVAS_WIDTH, height: CANVAS_HEIGHT,
-      fill: '#0f1117',
-    },
-    {
-      id: genId(), type: 'rect',
-      x: 80, y: 220,
-      width: 6, height: 280,
-      fill: '#6366f1',
-    },
-    {
+  const elements: CanvasElement[] = []
+
+  // 深色背景
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: 0, y: 0,
+    width: CANVAS_WIDTH, height: CANVAS_HEIGHT,
+    fill: BRAND.dark,
+  })
+
+  // 左侧品牌色竖条
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: 80, y: 200,
+    width: 6, height: 280,
+    fill: BRAND.primary,
+  })
+
+  // 标签行（带边框）
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: 120, y: 160,
+    width: 300, height: 28,
+    text: 'PRODUCT DEEP RESEARCH',
+    fontSize: 10,
+    fontWeight: '600',
+    fill: BRAND.primary,
+  })
+
+  // 主标题
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: 120, y: 210,
+    width: CANVAS_WIDTH - 240, height: 80,
+    text: topic,
+    fontSize: 38, fontWeight: 'bold',
+    fill: BRAND.white,
+  })
+
+  // 品牌色分割线
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: 120, y: 320,
+    width: 200, height: 4,
+    fill: BRAND.primary,
+  })
+
+  // 副标题
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: 120, y: 350,
+    width: CANVAS_WIDTH - 240, height: 40,
+    text: '产品深度研究路演方案',
+    fontSize: 18,
+    fill: '#bcc8e0',
+  })
+
+  // 日期
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: 120, y: 420,
+    width: CANVAS_WIDTH - 240, height: 30,
+    text: new Date().toLocaleDateString('zh-CN', {
+      year: 'numeric', month: 'long', day: 'numeric',
+    }),
+    fontSize: 14,
+    fill: '#64748b',
+  })
+
+  // 底部出品信息
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: 120, y: 630,
+    width: CANVAS_WIDTH - 240, height: 60,
+    text: '出品机构 · 产品前沿战略研究院\n核心引擎 · AI 多模态视觉管道\n数据溯源 · 混合 RAG 权威检索链路',
+    fontSize: 11,
+    fill: '#64748b',
+  })
+
+  return elements
+}
+
+// ══════════════════════════════════════════════════════════════
+// 目录页构建
+// ══════════════════════════════════════════════════════════════
+
+function buildTOCSlide(
+  sections: Array<{ title: string }>,
+  logoUrl?: string,
+): CanvasElement[] {
+  const elements: CanvasElement[] = []
+
+  // 白色背景
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: 0, y: 0,
+    width: CANVAS_WIDTH, height: CANVAS_HEIGHT,
+    fill: BRAND.white,
+  })
+
+  // 左侧品牌色竖条
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: 0, y: 0,
+    width: SIDEBAR_WIDTH, height: CANVAS_HEIGHT,
+    fill: BRAND.primary,
+  })
+
+  // Logo
+  if (logoUrl) {
+    elements.push({
+      id: genId(), type: 'image', name: 'decor',
+      src: resolveImageUrl(logoUrl),
+      x: 24, y: 8,
+      width: 40, height: 40,
+    })
+  }
+
+  // "目录" 标题
+  const titleX = logoUrl ? 80 : CONTENT_X
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: titleX, y: 14,
+    width: 200, height: 36,
+    text: '目录',
+    fontSize: 20, fontWeight: 'bold',
+    fill: BRAND.heading,
+  })
+
+  // 页眉分隔线
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: SIDEBAR_WIDTH, y: HEADER_HEIGHT,
+    width: CANVAS_WIDTH - SIDEBAR_WIDTH, height: 2,
+    fill: BRAND.primary,
+  })
+
+  // 章节列表（双栏布局）
+  const colWidth = 540
+  const colGap = 40
+  const leftColX = CONTENT_X
+  const rightColX = CONTENT_X + colWidth + colGap
+  const startY = 80
+  const lineHeight = 36
+  const maxPerCol = Math.floor((CONTENT_END_Y - startY) / lineHeight)
+
+  sections.forEach((section, i) => {
+    const col = Math.floor(i / maxPerCol)
+    const row = i % maxPerCol
+    const x = col === 0 ? leftColX : rightColX
+    const y = startY + row * lineHeight
+
+    if (y > CONTENT_END_Y - 20) return // 防溢出
+
+    // 章节序号（品牌色圆点 + 数字）
+    elements.push({
+      id: genId(), type: 'circle', name: 'decor',
+      x: x, y: y + 8,
+      width: 8, height: 8,
+      radius: 4,
+      fill: BRAND.primary,
+    })
+
+    elements.push({
       id: genId(), type: 'text',
-      x: 120, y: 200,
-      width: CANVAS_WIDTH - 240, height: 80,
-      text: topic,
-      fontSize: 36, fontWeight: 'bold',
-      fill: '#ffffff',
-    },
-    {
-      id: genId(), type: 'text',
-      x: 120, y: 340,
-      width: CANVAS_WIDTH - 240, height: 40,
-      text: '产品深度分析报告',
-      fontSize: 20,
-      fill: '#94a3b8',
-    },
-    {
-      id: genId(), type: 'rect',
-      x: 120, y: 460,
-      width: 200, height: 2,
-      fill: '#6366f1',
-    },
-    {
-      id: genId(), type: 'text',
-      x: 120, y: 500,
-      width: CANVAS_WIDTH - 240, height: 30,
-      text: new Date().toLocaleDateString('zh-CN', {
-        year: 'numeric', month: 'long', day: 'numeric',
-      }),
-      fontSize: 16,
-      fill: '#64748b',
-    },
-  ]
+      x: x + 16, y: y,
+      width: colWidth - 20, height: lineHeight,
+      text: section.title,
+      fontSize: 15,
+      fill: BRAND.body,
+    })
+  })
+
+  // 页脚
+  const footerY = CANVAS_HEIGHT - FOOTER_HEIGHT
+  elements.push({
+    id: genId(), type: 'rect', name: 'decor',
+    x: SIDEBAR_WIDTH, y: footerY,
+    width: CANVAS_WIDTH - SIDEBAR_WIDTH, height: FOOTER_HEIGHT,
+    fill: BRAND.footerBg,
+  })
+  elements.push({
+    id: genId(), type: 'text', name: 'decor',
+    x: CONTENT_X, y: footerY + 4,
+    width: 400, height: 16,
+    text: 'CONFIDENTIAL · 产品深度研究',
+    fontSize: 9,
+    fill: BRAND.muted,
+  })
+
+  return elements
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -348,22 +542,19 @@ interface SlideBuildState {
   elements: CanvasElement[]
   currentY: number
   activeCitations: Set<string>
-  layout: LayoutParams
 }
 
 // ══════════════════════════════════════════════════════════════
-// AST Token → CanvasElement 精确映射（v3 视觉升级版）
+// AST Token → CanvasElement 精确映射（v5 商业风格版）
 // ══════════════════════════════════════════════════════════════
 
 /**
  * 检查段落 token 中是否包含内嵌图片，如有则提取渲染。
- * 返回 true 表示渲染了图片（已在内部累加 currentY），false 表示无图片。
  */
 function tryRenderParagraphImages(
   token: marked.Tokens.Paragraph,
   state: SlideBuildState,
 ): boolean {
-  // 检查内嵌 tokens 中是否有 image
   const inlineTokens = (token as any).tokens as marked.Token[] | undefined
   if (!inlineTokens || inlineTokens.length === 0) return false
 
@@ -377,7 +568,7 @@ function tryRenderParagraphImages(
       state.elements.push({
         id: genId(),
         type: 'image',
-        x: state.layout.contentX,
+        x: CONTENT_X,
         y: state.currentY,
         width: IMAGE_RENDER_WIDTH,
         height: IMAGE_RENDER_HEIGHT,
@@ -395,8 +586,6 @@ function processToken(
   token: marked.Token,
   state: SlideBuildState,
 ): void {
-  const { contentX, listX } = state.layout
-
   switch (token.type) {
     // ── 标题 ──────────────────────────────────────────────
     case 'heading': {
@@ -408,12 +597,12 @@ function processToken(
       state.elements.push({
         id: genId(),
         type: 'text',
-        x: contentX, y: state.currentY,
+        x: CONTENT_X, y: state.currentY,
         width: CONTENT_WIDTH, height: h + 10,
         text,
         fontSize: HEADING_FONT_SIZE,
         fontWeight: 'bold',
-        fill: '#0f172a',
+        fill: BRAND.heading,
       })
       state.currentY += h + 16
       break
@@ -423,16 +612,13 @@ function processToken(
     case 'paragraph': {
       const t = token as marked.Tokens.Paragraph
 
-      // v3 新增：优先检查内嵌图片
       const hasImage = tryRenderParagraphImages(t, state)
       if (hasImage) {
-        // 有图片 → 已渲染图片元素，但还需要处理文本部分的引用扫描
         const text = t.text
         for (const c of scanCitations(text)) state.activeCitations.add(c)
         break
       }
 
-      // 无图片 → 正常文本渲染
       const text = t.text
       for (const c of scanCitations(text)) state.activeCitations.add(c)
 
@@ -443,17 +629,17 @@ function processToken(
       state.elements.push({
         id: genId(),
         type: 'text',
-        x: contentX, y: state.currentY,
+        x: CONTENT_X, y: state.currentY,
         width: CONTENT_WIDTH, height: h + 8,
         text: plain,
         fontSize: BODY_FONT_SIZE,
-        fill: '#334155',
+        fill: BRAND.body,
       })
       state.currentY += h + 12
       break
     }
 
-    // ── 列表（v3 视觉升级：圆形子弹点替代 • 文本） ────
+    // ── 列表（品牌色圆点） ────────────────────────────────
     case 'list': {
       const t = token as marked.Tokens.List
       let itemIndex = 0
@@ -467,38 +653,36 @@ function processToken(
         const h = estimateTextHeight(plain, BODY_FONT_SIZE, CONTENT_WIDTH - 20)
 
         if (t.ordered) {
-          // 有序列表：数字前缀文本
           itemIndex++
           const displayText = `${itemIndex}. ${plain}`
           state.elements.push({
             id: genId(),
             type: 'text',
-            x: listX, y: state.currentY,
+            x: LIST_X, y: state.currentY,
             width: CONTENT_WIDTH - 20, height: h + 4,
             text: displayText,
             fontSize: BODY_FONT_SIZE,
-            fill: '#334155',
+            fill: BRAND.body,
           })
         } else {
-          // 无序列表：圆形子弹点 + 文本
           const bulletY = state.currentY + h / 2 - 2
           state.elements.push({
             id: genId(),
             type: 'circle',
-            x: listX - 8, y: bulletY - 4,
+            x: LIST_X - 8, y: bulletY - 4,
             width: 8, height: 8,
             radius: 4,
-            fill: '#6366f1',
+            fill: BRAND.primary,
           } as CanvasElement)
 
           state.elements.push({
             id: genId(),
             type: 'text',
-            x: listX + 16, y: state.currentY,
+            x: LIST_X + 16, y: state.currentY,
             width: CONTENT_WIDTH - 36, height: h + 4,
             text: plain,
             fontSize: BODY_FONT_SIZE,
-            fill: '#334155',
+            fill: BRAND.body,
           })
         }
 
@@ -511,7 +695,6 @@ function processToken(
     // ── 表格 ──────────────────────────────────────────────
     case 'table': {
       const t = token as marked.Tokens.Table
-      // v3 防御性剥离：强制剥除 LLM 可能带上的双引号
       const header = t.header.map((cell) => cell.text.replace(/^"|"$/g, '').trim())
       const rows = t.rows.map((row) => row.map((cell) => cell.text.replace(/^"|"$/g, '').trim()))
       const data = [header, ...rows]
@@ -528,7 +711,7 @@ function processToken(
       state.elements.push({
         id: genId(),
         type: 'table',
-        x: contentX, y: state.currentY,
+        x: CONTENT_X, y: state.currentY,
         width: tableW, height: tableH,
         tableData: data,
       } as CanvasElement)
@@ -536,7 +719,7 @@ function processToken(
       break
     }
 
-    // ── 引用块（v3 视觉升级：背景色块 + 左侧蓝色竖条） ──
+    // ── 引用块 ──────────────────────────────────────────────
     case 'blockquote': {
       const t = token as marked.Tokens.Blockquote
       const text = t.text
@@ -548,29 +731,26 @@ function processToken(
       const h = estimateTextHeight(plain, BODY_FONT_SIZE, CONTENT_WIDTH - 20)
       const blockH = h + 16
 
-      // 背景色块
+      // 浅色背景
       state.elements.push({
-        id: genId(),
-        type: 'rect',
-        x: contentX, y: state.currentY,
+        id: genId(), type: 'rect',
+        x: CONTENT_X, y: state.currentY,
         width: CONTENT_WIDTH, height: blockH,
         fill: '#f8fafc',
       })
 
       // 左侧蓝色竖条
       state.elements.push({
-        id: genId(),
-        type: 'rect',
-        x: contentX, y: state.currentY,
+        id: genId(), type: 'rect',
+        x: CONTENT_X, y: state.currentY,
         width: BLOCKQUOTE_BAR_WIDTH, height: blockH,
-        fill: '#3b82f6',
+        fill: BRAND.primary,
       })
 
-      // 文字（右移 16px）
+      // 文字
       state.elements.push({
-        id: genId(),
-        type: 'text',
-        x: contentX + BLOCKQUOTE_BAR_WIDTH + 12, y: state.currentY + 8,
+        id: genId(), type: 'text',
+        x: CONTENT_X + BLOCKQUOTE_BAR_WIDTH + 12, y: state.currentY + 8,
         width: CONTENT_WIDTH - BLOCKQUOTE_BAR_WIDTH - 20, height: h + 8,
         text: plain,
         fontSize: BODY_FONT_SIZE,
@@ -583,7 +763,7 @@ function processToken(
 
     // ── 空白 ──────────────────────────────────────────────
     case 'space':
-      state.currentY += 8
+      state.currentY += 6  // 略微减少空白行间距
       break
 
     // ── 代码块 ────────────────────────────────────────────
@@ -612,7 +792,6 @@ function estimateTokenHeight(token: marked.Token): number {
     }
     case 'paragraph': {
       const t = token as marked.Tokens.Paragraph
-      // v3：检查是否有内嵌图片
       const inlineTokens = (t as any).tokens as marked.Token[] | undefined
       if (inlineTokens) {
         let imgH = 0
@@ -647,7 +826,7 @@ function estimateTokenHeight(token: marked.Token): number {
       return t.text.split('\n').length * 18 + 12
     }
     case 'space':
-      return 8
+      return 6
     default:
       return 4
   }
@@ -658,106 +837,160 @@ function hasSubstance(token: marked.Token): boolean {
 }
 
 // ══════════════════════════════════════════════════════════════
-// 页尾引用渲染
+// 引用页尾渲染（v5：分隔线 + 溢出检测）
 // ══════════════════════════════════════════════════════════════
 
 function appendCitationFooter(
   elements: CanvasElement[],
   activeCitations: Set<string>,
   citationsDict: Record<string, string>,
-  contentX: number,
-): void {
-  if (activeCitations.size === 0) return
+  currentY: number,
+): number {
+  if (activeCitations.size === 0) return currentY
 
   const citationText = buildCitationText(activeCitations, citationsDict)
-  if (!citationText) return
+  if (!citationText) return currentY
 
+  // 估算引用区高度
+  const citationLines = citationText.length / 80 + 1  // 粗略按 80 字符换行
+  const citationHeight = Math.min(Math.ceil(citationLines) * 16 + 8, 60)
+
+  // 分隔线 Y = 内容下方留 8px，但不低于 CITATION_ZONE_Y
+  const separatorY = Math.min(currentY + 8, CITATION_ZONE_Y)
+
+  // 检测溢出：如果引用区会与页脚重叠，则不渲染（推到下一页）
+  if (separatorY + citationHeight > CANVAS_HEIGHT - FOOTER_HEIGHT - 4) {
+    return currentY // 返回未渲染引用的 Y，由分页逻辑处理
+  }
+
+  // 分隔线
   elements.push({
-    id: genId(),
-    type: 'text',
-    x: contentX, y: CITATION_Y,
-    width: CONTENT_WIDTH, height: 55,
+    id: genId(), type: 'rect', name: 'decor',
+    x: CONTENT_X, y: separatorY,
+    width: 200, height: 1,
+    fill: BRAND.divider,
+  })
+
+  // 引用文本
+  elements.push({
+    id: genId(), type: 'text',
+    x: CONTENT_X, y: separatorY + 6,
+    width: CONTENT_WIDTH, height: citationHeight,
     text: citationText,
     fontSize: CITATION_FONT_SIZE,
-    fill: '#94a3b8',
+    fill: BRAND.muted,
   })
+
+  return separatorY + citationHeight
 }
 
 // ══════════════════════════════════════════════════════════════
-// 正文分页引擎（v3：前瞻式分页，防孤儿标题）
+// 正文分页引擎（v5：商业风格 + 章节级渲染）
 // ══════════════════════════════════════════════════════════════
 
-/**
- * 将一个章节的 Markdown 内容解析为多张幻灯片元素数组。
- *
- * v3 前瞻式分页算法：
- * - 使用索引循环遍历 tokens
- * - 若当前 token 为 heading 且有后续 token，
- *   则 totalH = 标题高度 + 后续内容高度（确保标题不孤悬）
- * - 若 currentY + totalH > MAX_Y 则先行翻页
- */
 function buildContentSlides(
   sectionTitle: string,
   content: string,
   citationsDict: Record<string, string>,
   logoUrl?: string,
+  startPageNumber?: number,
+  totalPages?: number,
 ): CanvasElement[][] {
   const slidesElements: CanvasElement[][] = []
-  const layout = computeLayout(logoUrl)
 
   // 1. AST 解析
-  const tokens = marked.lexer(content)
-  if (tokens.length === 0) {
+  const rawTokens = marked.lexer(content)
+  if (rawTokens.length === 0) {
     // 空内容 → 仍输出一张装饰页
-    slidesElements.push([...buildSlideDecor(sectionTitle, layout, logoUrl)])
+    slidesElements.push([
+      ...buildSlideDecor({
+        sectionTitle,
+        logoUrl,
+        pageNumber: startPageNumber,
+        totalPages,
+      }),
+    ])
+    return slidesElements
+  }
+
+  // Token 预处理：过滤无用节点
+  let firstHeadingRemoved = false
+  const tokens = rawTokens.filter((token) => {
+    if (token.type === 'space') return false
+    // 剔除第一个 heading（静态装饰器中已渲染了章节标题）
+    if (!firstHeadingRemoved && token.type === 'heading') {
+      firstHeadingRemoved = true
+      return false
+    }
+    return true
+  })
+
+  if (tokens.length === 0) {
+    slidesElements.push([
+      ...buildSlideDecor({
+        sectionTitle,
+        logoUrl,
+        pageNumber: startPageNumber,
+        totalPages,
+      }),
+    ])
     return slidesElements
   }
 
   // 2. 初始化第一页
+  let currentPageNum = startPageNumber || 1
   let state: SlideBuildState = {
-    elements: [...buildSlideDecor(sectionTitle, layout, logoUrl)],
-    currentY: START_Y,
+    elements: [
+      ...buildSlideDecor({
+        sectionTitle,
+        logoUrl,
+        pageNumber: currentPageNum,
+        totalPages,
+      }),
+    ],
+    currentY: CONTENT_START_Y,
     activeCitations: new Set<string>(),
-    layout,
   }
 
   let continuationIndex = 0
 
-  // 3. v3：索引循环 + 前瞻判页
+  // 3. 索引循环 + 前瞻判页
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]
     let totalH = estimateTokenHeight(token)
 
-    // 孤儿标题前瞻：若当前为 heading 且有下一个 token，
-    // 将下一个 token 的高度也计入需求，确保标题与内容同页
+    // 孤儿标题前瞻
     if (token.type === 'heading' && i + 1 < tokens.length) {
       const nextH = estimateTokenHeight(tokens[i + 1])
       totalH += nextH
     }
 
-    // 翻页条件（v3 修复：禁止在空页面上强制翻页，必须 currentY > START_Y）
-    if (hasSubstance(token) && state.currentY > START_Y && state.currentY + totalH > MAX_Y) {
-      // 当前页收尾
+    // 翻页条件
+    if (hasSubstance(token) && state.currentY > CONTENT_START_Y && state.currentY + totalH > CONTENT_END_Y) {
+      // 当前页收尾：渲染引用页尾
       appendCitationFooter(
         state.elements,
         state.activeCitations,
         citationsDict,
-        layout.contentX,
+        state.currentY,
       )
       slidesElements.push(state.elements)
 
       // 新页
       continuationIndex++
-      const contTitle =
-        continuationIndex === 1
-          ? sectionTitle
-          : `${sectionTitle}(续${continuationIndex})`
+      currentPageNum++
 
       state = {
-        elements: [...buildSlideDecor(contTitle, layout, logoUrl)],
-        currentY: START_Y,
+        elements: [
+          ...buildSlideDecor({
+            sectionTitle,
+            logoUrl,
+            pageNumber: currentPageNum,
+            totalPages,
+          }),
+        ],
+        currentY: CONTENT_START_Y,
         activeCitations: new Set<string>(),
-        layout,
       }
     }
 
@@ -769,7 +1002,7 @@ function buildContentSlides(
     state.elements,
     state.activeCitations,
     citationsDict,
-    layout.contentX,
+    state.currentY,
   )
   slidesElements.push(state.elements)
 
@@ -777,52 +1010,156 @@ function buildContentSlides(
 }
 
 // ══════════════════════════════════════════════════════════════
+// 全局引用编号 reconcile
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 将多个 block 的 per-section citationsDict 合并为全局引用字典。
+ * 相同 URL 的引用会映射到同一个全局 ID，避免不同章节的 [^1]
+ * 指向不同 URL 造成混淆。
+ */
+function reconcileCitationsGlobal(
+  blockCitationDicts: Array<Record<string, string>>,
+): {
+  globalDicts: Array<Record<string, string>>  // 每个 block 重新映射后的字典
+  globalDict: Record<string, string>          // 全局完整字典
+} {
+  const urlToGlobalId: Record<string, string> = {}
+  const globalDict: Record<string, string> = {}
+  let nextGlobalId = 1
+
+  const globalDicts: Array<Record<string, string>> = []
+
+  for (const localDict of blockCitationDicts) {
+    const remapped: Record<string, string> = {}
+
+    for (const [localId, urlOrText] of Object.entries(localDict)) {
+      // 提取纯 URL（去除可能的 "来源链接: <url>" 包装）
+      let cleanUrl = urlOrText
+      const urlMatch = urlOrText.match(/<(https?:\/\/[^>]+)>/)
+      if (urlMatch) {
+        cleanUrl = urlMatch[1]
+      } else if (urlOrText.startsWith('来源链接: ')) {
+        cleanUrl = urlOrText.replace('来源链接: ', '').trim()
+      }
+
+      // 检查是否已注册
+      const existingGlobalId = urlToGlobalId[cleanUrl]
+      if (existingGlobalId) {
+        remapped[localId] = cleanUrl
+        // 映射 localId → existingGlobalId（渲染时替换）
+      } else {
+        const gid = String(nextGlobalId)
+        urlToGlobalId[cleanUrl] = gid
+        globalDict[gid] = cleanUrl
+        remapped[localId] = cleanUrl
+        nextGlobalId++
+      }
+    }
+
+    globalDicts.push(remapped)
+  }
+
+  return { globalDicts, globalDict }
+}
+
+// ══════════════════════════════════════════════════════════════
 // 公开 API
 // ══════════════════════════════════════════════════════════════
 
 /**
- * 将后端 DocumentBlock 数组转换为 Konva 幻灯片数组（v3 AST 分页版）。
+ * 将后端 DocumentBlock 数组转换为 Konva 幻灯片数组（v5 商业风格版）。
  *
- * @param topic   项目主题（用作封面标题）
- * @param blocks  后端文档块列表
- * @param logoUrl 可选 Logo 图片 URL（用于左上角渲染 + 弹性安全区）
- * @returns       幻灯片数组
+ * 两遍扫描策略：
+ * 1. 第一遍：生成所有 slide 元素，确定总页数
+ * 2. 第二遍：将正确的页码信息注入每个 slide 的装饰元素中
  */
 export function convertBlocksToKonvaSlides(
   topic: string,
   blocks: Pick<DocumentBlockResponse, 'section_title' | 'content' | 'order_index'>[],
   logoUrl?: string,
 ): KonvaSlide[] {
-  const slides: KonvaSlide[] = []
   _elementIdCounter = 0
 
-  // ── Slide 0：封面 ────────────────────────────────────
-  slides.push({
-    pageNumber: 0,
+  const sorted = [...blocks].sort((a, b) => a.order_index - b.order_index)
+
+  // ── Step 1: 提取所有 block 的引用字典，进行全局 reconcile ──
+  const blockCitationDicts: Array<Record<string, string>> = []
+  const blockCleanedMarkdowns: string[] = []
+
+  for (const block of sorted) {
+    const rawContent = block.content || ''
+    const { cleanedMarkdown, citationsDict } = extractCitations(rawContent)
+    blockCitationDicts.push(citationsDict)
+    blockCleanedMarkdowns.push(cleanedMarkdown)
+  }
+
+  const { globalDict } = reconcileCitationsGlobal(blockCitationDicts)
+
+  // ── Step 2: 第一遍 — 生成所有 slide 元素（页码暂为占位） ──
+  interface SlideInfo {
+    sectionTitle: string
+    elements: CanvasElement[]
+  }
+  const allSlideInfos: SlideInfo[] = []
+
+  // 封面
+  allSlideInfos.push({
     sectionTitle: '封面',
     elements: buildCoverSlide(topic),
   })
 
-  // ── Slides 1..N：AST 分页正文 ─────────────────────────
-  const sorted = [...blocks].sort((a, b) => a.order_index - b.order_index)
+  // 目录
+  const sectionList = sorted.map((block) => ({
+    title: block.section_title || '章节',
+  }))
+  allSlideInfos.push({
+    sectionTitle: '目录',
+    elements: buildTOCSlide(sectionList, logoUrl),
+  })
 
-  let pageNum = 1
-  for (const block of sorted) {
-    const title = block.section_title || `章节`
-    const rawContent = block.content || ''
+  // 正文
+  for (let bIdx = 0; bIdx < sorted.length; bIdx++) {
+    const block = sorted[bIdx]
+    const title = block.section_title || '章节'
+    const cleanedMarkdown = blockCleanedMarkdowns[bIdx]
 
-    const { cleanedMarkdown, citationsDict } = extractCitations(rawContent)
-    const pageElements = buildContentSlides(title, cleanedMarkdown, citationsDict, logoUrl)
+    const pageElements = buildContentSlides(
+      title,
+      cleanedMarkdown,
+      globalDict,
+      logoUrl,
+    )
 
     for (const elements of pageElements) {
-      slides.push({
-        pageNumber: pageNum,
-        sectionTitle: title,
-        elements,
-      })
-      pageNum++
+      allSlideInfos.push({ sectionTitle: title, elements })
     }
   }
+
+  // ── Step 3: 注入正确的页码 ──
+  const totalPages = allSlideInfos.length
+  for (let i = 0; i < allSlideInfos.length; i++) {
+    const slideInfo = allSlideInfos[i]
+    // 找到页码 text 元素并更新
+    for (const el of slideInfo.elements) {
+      if (el.name === 'decor' && el.type === 'text' && el.fontSize === 12 &&
+          el.x === CANVAS_WIDTH - 140 && el.y === 18) {
+        el.text = `${i} / ${totalPages - 1}`
+        break
+      }
+    }
+    // 封面和目录页不显示页码（封面无页码元素，目录页也无）
+    if (i <= 1) {
+      // 移除目录页可能带有的页码（如果 buildTOCSlide 没有添加则无需处理）
+    }
+  }
+
+  // ── Step 4: 组装最终结果 ──
+  const slides: KonvaSlide[] = allSlideInfos.map((info, i) => ({
+    pageNumber: i,
+    sectionTitle: info.sectionTitle,
+    elements: info.elements,
+  }))
 
   return slides
 }
@@ -840,7 +1177,8 @@ export function createBlankSlide(pageNumber: number): KonvaSlide {
         type: 'rect',
         x: 0, y: 0,
         width: CANVAS_WIDTH, height: CANVAS_HEIGHT,
-        fill: '#ffffff',
+        fill: BRAND.white,
+        name: 'decor',
       },
     ],
   }

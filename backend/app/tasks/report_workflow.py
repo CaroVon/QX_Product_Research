@@ -414,45 +414,22 @@ def _save_section_as_blocks(
     section_index: int,
 ):
     """
-    将单章节的 Markdown 内容拆分为多个 DocumentBlock，
-    每个段落以一个空行为界，供 Tiptap 编辑器加载。
+    将单章节的 Markdown 内容保存为一个完整的 DocumentBlock，
+    使前端 Canvas 以章节为单位进行分页排版，避免段落级拆分导致
+    每个 Block 都带装饰区（120-180px 开销）而产生过多碎片页。
     """
     citations: dict[str, str] = {}
-    lines = content.split("\n")
-    block_lines: list[str] = []
     block_order = (section_index + 1) * 10
-    sub_idx = 0
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "":
-            if block_lines:
-                block_content = "\n".join(block_lines)
-                if block_content.strip():
-                    repo.save_document_block(
-                        project_id=project_id,
-                        section_title=section_title,
-                        content=block_content,
-                        citations=citations,
-                        order_index=block_order + sub_idx,
-                    )
-                    sub_idx += 1
-                block_lines = []
-        else:
-            block_lines.append(line)
-
-    # 处理最后剩余的行
-    if block_lines:
-        block_content = "\n".join(block_lines)
-        if block_content.strip():
-            repo.save_document_block(
-                project_id=project_id,
-                section_title=section_title,
-                content=block_content,
-                citations=citations,
-                order_index=block_order + sub_idx,
-            )
-            sub_idx += 1
-
-    logger.info("[BLOCKS] 章节 '%s' 已拆分为 %d 个 DocumentBlock",
-                section_title, sub_idx + 1)
+    if content.strip():
+        repo.save_document_block(
+            project_id=project_id,
+            section_title=section_title,
+            content=content,
+            citations=citations,
+            order_index=block_order,
+        )
+        logger.info("[BLOCKS] 章节 '%s' 保存为 1 个 DocumentBlock (section-level)",
+                     section_title)
+    else:
+        logger.warning("[BLOCKS] 章节 '%s' 内容为空，跳过保存", section_title)

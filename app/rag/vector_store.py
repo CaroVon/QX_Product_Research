@@ -22,6 +22,9 @@ class LocalEmbeddingModel:
     _instance = None
     _model = None
 
+    # 批量嵌入的每批大小，避免一次性嵌入过多文本导致 OOM 或超时
+    EMBED_BATCH_SIZE = 32
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -43,7 +46,16 @@ class LocalEmbeddingModel:
         return self._model
 
     def embed_documents(self, texts):
-        return self._get_model().encode(texts).tolist()
+        """批量嵌入文档，分批处理避免内存溢出或连接超时。"""
+        model = self._get_model()
+        all_embeddings = []
+        batch_size = self.EMBED_BATCH_SIZE
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            batch_embeddings = model.encode(batch, show_progress_bar=False).tolist()
+            all_embeddings.extend(batch_embeddings)
+            logger.debug("[Embedding] 嵌入进度: %d/%d", min(i + batch_size, len(texts)), len(texts))
+        return all_embeddings
 
     def embed_query(self, text):
         return self._get_model().encode(text).tolist()

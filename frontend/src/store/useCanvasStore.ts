@@ -42,6 +42,9 @@ export interface CanvasElement {
   strokeWidth?: number
   radius?: number  // 圆形/圆角半径
   points?: number[] // 线条专用 [x1,y1,x2,y2,...]
+
+  // 元素分类（用于编辑器过滤非交互装饰元素）
+  name?: string // 'decor' = 不可选中的装饰元素
 }
 
 export interface CanvasState {

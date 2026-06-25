@@ -377,7 +377,12 @@ export function CanvasSlideEditor({
     if (!stage || !tr) return
     const nodes = selectedElementIds
       .map((id) => stage.findOne(`#${id}`))
-      .filter(Boolean)
+      .filter((n): n is Konva.Node => {
+        if (!n) return false
+        // 跳过装饰元素
+        const el = displayElements.find((e) => e.id === n.id())
+        return el ? el.name !== 'decor' : true
+      })
     tr.nodes(nodes)
     tr.getLayer()?.batchDraw()
   }, [selectedElementIds, displayElements])
@@ -950,20 +955,23 @@ export function CanvasSlideEditor({
                 {displayElements.map((el: CanvasElement) => {
                   const isEditing = el.id === editingElementId
                   const isSelected = selectedElementIds.includes(el.id)
+                  const isDecor = el.name === 'decor'  // 装饰元素不可选中/拖拽
 
-                  const interactionProps = {
-                    draggable: !readOnly && !isEditing,
-                    onClick: (e: any) => {
-                      e.cancelBubble = true
-                      selectElement(el.id)
-                    },
-                    onTap: (e: any) => {
-                      e.cancelBubble = true
-                      selectElement(el.id)
-                    },
-                    onDragEnd: handleDragEnd(el.id, el.type),
-                    onTransformEnd: handleTransformEnd(el.id, el.type),
-                  }
+                  const interactionProps = isDecor
+                    ? { draggable: false }  // 装饰元素：无交互
+                    : {
+                        draggable: !readOnly && !isEditing,
+                        onClick: (e: any) => {
+                          e.cancelBubble = true
+                          selectElement(el.id)
+                        },
+                        onTap: (e: any) => {
+                          e.cancelBubble = true
+                          selectElement(el.id)
+                        },
+                        onDragEnd: handleDragEnd(el.id, el.type),
+                        onTransformEnd: handleTransformEnd(el.id, el.type),
+                      }
 
                   switch (el.type) {
                     case 'rect':

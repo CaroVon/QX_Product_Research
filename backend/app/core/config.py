@@ -112,7 +112,8 @@ class Settings(BaseSettings):
     CONCEPT_IMAGE_WIDTH: str = Field(default="1024")
     CONCEPT_IMAGE_HEIGHT: str = Field(default="576")
 
-    # ─── Embedding 模型路径 ──────────────────────────────────────
+    # ─── HuggingFace / Embedding ─────────────────────────────────
+    HF_ENDPOINT: str = Field(default="https://hf-mirror.com")
     EMBEDDING_MODEL_PATH: str = Field(default="BAAI/bge-small-zh-v1.5")
 
     # ─── 启动时关键配置校验（fail-fast：不要在深度执行时才报错） ───
@@ -154,4 +155,13 @@ def get_settings() -> Settings:
     return Settings()
 
 settings = Settings()
+
+# ─── 将关键配置桥接到 os.environ ───────────────────────────────
+# SentenceTransformer / huggingface_hub 底层直接读取 os.environ，
+# 而非 pydantic Settings 对象。此处确保 .env 中的值在模块导入时
+# 即写入进程环境变量，避免模型下载时走不通的默认 HuggingFace 地址。
+if settings.HF_ENDPOINT:
+    os.environ.setdefault("HF_ENDPOINT", settings.HF_ENDPOINT)
+if settings.EMBEDDING_MODEL_PATH:
+    os.environ.setdefault("EMBEDDING_MODEL_PATH", settings.EMBEDDING_MODEL_PATH)
 

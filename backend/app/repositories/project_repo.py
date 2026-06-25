@@ -182,6 +182,9 @@ class ProjectRepo:
                 task.completed_at = _utcnow()
             if error_message:
                 task.error_message = error_message[:500]
+            elif status == TaskStatus.COMPLETED:
+                # 任务成功完成时清空之前可能残留的旧错误信息
+                task.error_message = None
 
             session.commit()
             logger.info(
@@ -219,6 +222,8 @@ class ProjectRepo:
                 task.completed_at = _utcnow()
             if error_message:
                 task.error_message = error_message[:500]
+            elif status == TaskStatus.COMPLETED:
+                task.error_message = None
 
             session.commit()
             logger.info(

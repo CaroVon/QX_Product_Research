@@ -21,6 +21,66 @@ def _safe_topic(topic: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', '_', topic)
 
 
+def _clean_llm_output(raw_content: str, section_title: str) -> str:
+    """
+    健壮地清理 LLM 输出：
+    1. 截断首个 ## 之前的寒暄语/前缀文本
+    2. 移除紧跟在首个章节标题后的重复标题（同一数字前缀或相同文本）
+    3. 移除残留的寒暄语模式
+    """
+    # Step 1: 截断首个 ## 之前的所有内容
+    match_idx = raw_content.find("##")
+    if match_idx != -1:
+        raw_content = raw_content[match_idx:]
+    else:
+        raw_content = f"## {section_title}\n\n" + raw_content.strip()
+        return raw_content
+
+    # Step 2: 移除重复的章节标题
+    lines = raw_content.split("\n")
+    cleaned_lines: list[str] = []
+    first_heading_seen = False
+    # 提取章节标题的数字前缀，如 "1." "2.1" 等
+    title_num_prefix = re.match(r'^(\d+[\.\s])', section_title)
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            heading_text = re.sub(r'^#{1,6}\s+', '', stripped)
+            if not first_heading_seen:
+                first_heading_seen = True
+                cleaned_lines.append(line)
+            else:
+                # 判断是否为重复标题
+                heading_num_prefix = re.match(r'^(\d+[\.\s])', heading_text)
+                is_duplicate = (
+                    heading_text == section_title
+                    or heading_text in section_title
+                    or section_title in heading_text
+                    or (title_num_prefix and heading_num_prefix
+                        and title_num_prefix.group(1) == heading_num_prefix.group(1)
+                        and len(heading_text) < len(section_title) * 2)
+                )
+                if is_duplicate:
+                    continue  # 跳过重复标题
+                else:
+                    cleaned_lines.append(line)
+        else:
+            cleaned_lines.append(line)
+
+    raw_content = "\n".join(cleaned_lines)
+
+    # Step 3: 移除残留的常见寒暄语模式
+    raw_content = re.sub(
+        r'^(好的[，,]?\s*|收到[，,]?\s*|以下是[，,]?\s*|以下为[，,]?\s*|这是[，,]?\s*)',
+        '',
+        raw_content,
+        flags=re.MULTILINE,
+    )
+
+    return raw_content
+
+
 
 
 # ══════════════════════════════════════════════════════════
@@ -112,19 +172,14 @@ def _write_text_section(
 示例格式：
 | 品牌型号 | 核心技术 | 价格 |
 | :--- | :--- | :--- |
-| 产品A | 追腰技术 | 1000元 |"""
+| 产品A | 追腰技术 | 1000元 |
+6. 【最高优先级：引用格式】文内引用必须严格使用 [^1] 的角标格式，绝不允许使用 [1] 或其他变体格式！"""
 
     response = llm.invoke(prompt)
     raw_content = response.content
-    
-    # 核心修复：硬截断前缀寒暄语
-    # 找到第一个 '## ' 的索引，截取从这里开始的所有内容
-    match_idx = raw_content.find("##")
-    if match_idx != -1:
-        raw_content = raw_content[match_idx:]
-    else:
-        # 如果模型甚至忘了写 ##，我们手动帮它补上并去除首尾空白
-        raw_content = f"## {section_title}\n\n" + raw_content.strip()
+
+    # 健壮的输出清理：截断寒暄语 + 移除重复标题
+    raw_content = _clean_llm_output(raw_content, section_title)
 
     final_content = resolve_and_append_citations(raw_content, ref_map)
     return final_content

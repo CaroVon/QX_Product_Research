@@ -25,35 +25,39 @@ def build_context_with_citations(retrieved_docs):
             
         ref_id = url_to_id[url]
         
-        context_str += f"【参考资料 {ref_id}】\n{doc.page_content}\n\n"
+        context_str += f"[^{ref_id}] {doc.page_content}\n\n"
 
     return context_str, ref_map
 
 def resolve_and_append_citations(llm_output, ref_map):
     """
-    阶段三：解析角标并组装底部参考资料
-    
+    阶段三：解析角标并组装底部脚注定义
+
     参数:
         llm_output (str): LLM 生成的 Markdown 原始报告
         ref_map (dict): 阶段一生成的 ID 到 URL 的映射字典
+
+    注意：不再追加 ### 📚 参考资料 标题，因为前端 Canvas 有专门的
+    页尾引用区域渲染引用信息。此处仅追加 Markdown 脚注定义行，
+    供前端 extractCitations() 提取后渲染到页尾。
     """
     # 使用正则找出文中所有类似 [^1], [^2] 的数字编号
-    # 兼容处理 LLM 可能偶尔写成的 [1] 格式 (可选，这里严谨点只抓 [^n] 或 [n])
+    # 兼容处理 LLM 可能偶尔写成的 [1] 格式
     used_refs = set(re.findall(r'\[\^?(\d+)\]', llm_output))
-    
+
     if not used_refs:
         return llm_output  # 如果 LLM 没用任何引用，直接返回原文本
 
-    # 构建底部的参考资料 Markdown
-    footer = "\n\n---\n### 📚 参考资料\n"
-    
+    # 构建脚注定义（纯 Markdown footnote 语法，不带 h3 标题）
+    footer = "\n\n---\n"
+
     # 将提取到的字符串编号转为整数并排序
     sorted_ref_ids = sorted([int(r) for r in used_refs])
-    
+
     for ref_id in sorted_ref_ids:
         if ref_id in ref_map:
             url = ref_map[ref_id]
-            # Markdown 脚注规范格式
-            footer += f"[^{ref_id}]: 来源链接: <{url}>\n"
+            # Markdown 脚注定义格式（前端 extractCitations 依赖此格式提取）
+            footer += f"[^{ref_id}]: {url}\n"
 
     return llm_output + footer
