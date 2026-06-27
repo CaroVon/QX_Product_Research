@@ -1,6 +1,6 @@
 # 🔬 QX Product Research Agent
 
-> **v0.2** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供三栏式交互工作台 + SSE 实时聊天。
+> **v0.7** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供 Canvas 幻灯片编辑器 + 图片素材库 + 图片裁剪 + 幻灯片管理。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136-green.svg)](https://fastapi.tiangolo.com/)
@@ -19,12 +19,13 @@
 
 将传统的 **"输入主题 → 黑盒等待 → 静态输出"** 线性产品分析工具，升级为具备 **断点干预、块级编辑、多轮迭代** 能力的现代 SaaS 产品研究工作台。
 
-**v0.2 亮点更新：**
-- 🤖 **AI 聊天面板** — SSE 流式对话，支持 Work/Chat 双模式，带 RAG 知识库检索
-- 📎 **本地上传文档** — 支持 PDF/DOCX/TXT 上传并自动解析入库
-- 📄 **手动导出 PDF** — 任意阶段导出编辑器内容为 PDF
-- 🖼️ **图片搜索引擎** — 基于 DuckDuckGo 的免 API Key 图片搜索
-- 📋 **报告模板选择** — 标准/竞品/投资三种报告视角
+**v0.7 亮点更新：**
+- 🎨 **Canvas 幻灯片编辑器** — React-Konva 声明式画布，拖拽编辑、裁剪、图层管理
+- 🖼️ **图片素材库** — DuckDuckGo 图片搜索 + 缩略图网格 + 拖拽到画布
+- ✂️ **图片裁剪** — 内置裁剪模式（四角缩放 + 拖拽移动 + 实时预览）
+- 📋 **幻灯片管理** — 复制/粘贴/新增/删除幻灯片 + 键盘快捷键
+- 🔄 **跨页剪贴板** — Ctrl+Shift+C/V 跨页复制粘贴幻灯片
+- 🧩 **Zustand 状态管理** — clipMode/image clipping/copiedSlide 等原子化状态 + zundo Undo/Redo
 
 **目标用户：** 资深产品经理 (PM)、用户体验专家 (UX)、工业设计战略家。
 
@@ -59,7 +60,7 @@
 |------|--------|------|
 | **🧠 研究引擎** `app/` | LangChain + Chroma + BM25 + PyMuPDF + DuckDuckGo + DeepSeek | 核心 RAG 管道：搜索→抓取→本地解析→切片→向量化→混合检索→大纲→撰写→PDF |
 | **⚙️ 后端服务** `backend/` | FastAPI + Celery + SQLite/PostgreSQL | REST API + 异步任务队列 + SSE 实时对话 + 状态机编排 + 数据持久化 |
-| **🎨 前端界面** `frontend/` | React 18 + Vite + TypeScript + Tailwind CSS + Radix UI | 三栏式交互工作台 + Tiptap 块编辑器 + SSE 实时流 + AI 对话 |
+| **🎨 前端界面** `frontend/` | React 18 + Vite + TypeScript + Tailwind CSS + Radix UI + React-Konva + Zustand/zundo | Canvas 幻灯片编辑器 + 图片素材库 + AI 对话面板 + 裁剪工具 |
 
 ---
 
@@ -197,6 +198,9 @@
 | `GET` | `/api/v1/projects/{id}/content` | 获取报告全文 (含引用溯源数据) |
 | `GET` | `/api/v1/projects/{id}/stream-draft` | 🌊 SSE 流式草稿输出 (逐块推送) |
 | `POST` | `/api/v1/projects/{id}/export-pdf` | 📄 手动导出 PDF (前端编辑器内容) |
+| `POST` | `/api/v1/projects/{id}/search-images` | 🔍 图片搜索 (DuckDuckGo)，结果持久化到项目图片库 |
+| `GET` | `/api/v1/projects/{id}/images` | 🖼️ 获取项目图片库（所有已搜索保存的图片） |
+| `DELETE` | `/api/v1/projects/{id}/images/{image_id}` | 🗑️ 从图片库中删除单张图片 |
 | `GET` | `/api/v1/projects/{id}/download` | 获取自动生成的 PDF 下载链接 |
 | `GET` | `/api/v1/projects/{id}/logs` | 获取终端风格实时运行日志 |
 
@@ -261,6 +265,7 @@ QX_product_agent/
 │   │   │   ├── document_block.py     #     原子化可编辑内容块
 │   │   │   ├── document.py           #     完整章节文档
 │   │   │   ├── project_log.py        #     终端风格时间轴日志
+│   │   │   ├── project_image.py      #     🆕 项目图片库 (图片搜索持久化)
 │   │   │   └── user.py               #     用户模型
 │   │   ├── schemas/__init__.py       #   Pydantic 请求/响应模型 (含 Chat/Upload/Export)
 │   │   ├── tasks/                    #   Celery 异步任务
@@ -289,6 +294,7 @@ QX_product_agent/
 │       │   │                         #           OutlineApproval / ProgressTracker
 │       │   │                         #           TerminalTimeline / ProjectCard
 │       │   ├── editor/               #     编辑器: BlockEditor / InlineAIBubble / DiffView
+│       │   │   │                       #            CanvasSlideEditor (Konva 画布) / ImageGallery
 │       │   │   └── extensions/       #       Tiptap 扩展: Citation 标注
 │       │   ├── report/               #     报告: CitationMarkdown
 │       │   └── common/               #     基础组件 (Button/Dialog/Popover/Input/Badge)
@@ -441,7 +447,9 @@ cd frontend && npm run dev
 | **Redis Docker 容器化** | 避免 WSL sudo 权限问题，`--restart unless-stopped` 自动保活 |
 | **大纲解析器单一实现** | `app/shared/outline_parser.py` 消除 CLI/API/Celery 三处重复代码 |
 | **ProjectRepo 依赖倒置** | Celery Worker 使用同步引擎的独立仓库层，消除散落的 raw SQL |
-| **DuckDuckGo 图片搜索** | 免 API Key，降低第三方依赖成本；与 Tavily 搜索互补 |
+| **DuckDuckGo 图片搜索** | 免 API Key，降低第三方依赖成本；结果持久化到 project_images 表，支持跨会话恢复 |
+| **Zustand + zundo Undo/Redo** | 原子化状态管理，`updateElement(page, id, {x,y})` 单字段更新，不触发全量序列化 |
+| **canvasRef editorApi** | 父组件通过 ref 调用 addText/addImage 直连 Zustand store，AI 面板与编辑器松耦合 |
 | **本地上传 + 远程搜索双通道** | 用户既可依赖全自动搜索，也可上传自有 PDF 参考文档 |
 | **Flux 架构: Dispatch → Action → Store → View** | 前端状态管理遵循单向数据流，useProjectStatus 为中央 Dispatch |
 
@@ -510,6 +518,11 @@ cd frontend && npx tsc --noEmit
    │  Document   │ │DocumentBlock │ │ ProjectLog   │
    │  (完整章节)  │ │ (原子化块)    │ │ (时间轴日志) │
    └─────────────┘ └──────────────┘ └──────────────┘
+                         ▼
+                  ┌──────────────┐
+                  │ ProjectImage │
+                  │ (图片素材库)  │
+                  └──────────────┘
 ```
 
 - **Document** — 完整章节，含引用 URL 映射 JSON
@@ -524,7 +537,10 @@ cd frontend && npx tsc --noEmit
 | 能力 | 实现 | 说明 |
 |------|------|------|
 | 🔍 自动信息搜集 | Tavily Search API | 全网搜索最新行业资讯 |
-| 🖼️ 图片搜索 | DuckDuckGo Images | 免 API Key，产品概念图搜索 |
+| 🖼️ 图片搜索 | DuckDuckGo Images | 免 API Key，产品概念图搜索，结果持久化到素材库 |
+| 🖼️ 图片素材库 | ImageGallery + search-images API | 搜索→缩略图网格→拖拽到画布 |
+| ✂️ 图片裁剪 | Konva clipFunc + Transformer | 四角缩放的裁剪区域，非破坏性编辑 |
+| 📋 幻灯片管理 | duplicateSlide / copySlide / pasteSlide | 复制/粘贴/新增/删除 幻灯片 + 键盘快捷键 |
 | 🕷️ 网页深度抓取 | Firecrawl | 网页转结构化 Markdown |
 | 📎 本地上传文档 | PyMuPDF + upload-docs API | PDF 解析切片，打入知识库 |
 | 📚 双引擎知识库 | Chroma + BM25 + RRF | 语义 + 关键词混合召回 |

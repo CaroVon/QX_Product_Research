@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 import time
 
 import requests
@@ -91,6 +92,7 @@ def get_llm():
         base_url=cfg["deepseek_base_url"],
         model=cfg["deepseek_model"],
         temperature=0.2,
+        max_tokens=4096,  # 显式给足输出预算，避免内容被默认上限截断
     )
     logger.info("DeepSeek LLM 客户端已初始化 (model=%s)", cfg["deepseek_model"])
     return _llm_instance
@@ -116,11 +118,46 @@ def _wrap_prompt(raw_prompt: str) -> str:
     )
 
 
+def _wrap_prompt_industrial(raw_prompt: str) -> str:
+    """
+    工业设计概念渲染风格包装器。
+    目标：生成专业级产品设计概念渲染图，适合设计评审 Portfolio。
+    """
+    return (
+        f"Professional industrial design concept rendering, "
+        f"photorealistic product visualization on neutral studio background, "
+        f"precise geometric forms with defined material transitions, "
+        f"controlled soft-key lighting revealing surface texture and chamfer details, "
+        f"16:9 widescreen composition suitable for design portfolio review, "
+        f"8K high-fidelity render with subtle ambient occlusion. "
+        f"Subject: {raw_prompt}"
+    )
+
+
+# ══════════════════════════════════════════════════════════
+# 图像生成限流（线程安全）
+# ══════════════════════════════════════════════════════════
+
+_last_image_call_time: float = 0.0
+_image_call_lock = threading.Lock()
+
+
+def _rate_limit_wait(min_interval: float = 3.0):
+    """强制 API 调用最小间隔，避免 429 限流。"""
+    global _last_image_call_time
+    with _image_call_lock:
+        elapsed = time.time() - _last_image_call_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _last_image_call_time = time.time()
+
+
 def generate_image(
     prompt: str,
     output_path: str,
     retries: int = 2,
     timeout: int = 120,
+    style: str = "business",
 ) -> bool:
     """
     调用硅基流动图像生成模型生成 16:9 横版概念图。
@@ -130,6 +167,7 @@ def generate_image(
         output_path: 图片保存路径 (e.g. outputs/images/xxx_concept.png)
         retries:     失败重试次数 (default 2, total attempts = 3)
         timeout:     单次请求超时秒数 (default 120)
+        style:       风格包装器 ("business" 商务封面 | "industrial_design" 工业设计渲染)
 
     Returns:
         bool: 生成成功返回 True，否则 False（调用方应使用 CSS 渐变兜底）
@@ -143,7 +181,10 @@ def generate_image(
         )
         return False
 
-    full_prompt = _wrap_prompt(prompt)
+    if style == "industrial_design":
+        full_prompt = _wrap_prompt_industrial(prompt)
+    else:
+        full_prompt = _wrap_prompt(prompt)
     image_width = cfg["image_width"]
     image_height = cfg["image_height"]
 
@@ -267,3 +308,35 @@ def generate_image(
 
     logger.warning("所有 %d 次尝试均失败，将使用 CSS 渐变兜底封面", retries + 1)
     return False
+
+
+def generate_images_batch(
+    prompts_and_paths: list[tuple[str, str]],
+    style: str = "industrial_design",
+    retries: int = 2,
+    timeout: int = 120,
+    inter_call_delay: float = 3.0,
+) -> list[bool]:
+    """
+    批量顺序生成多张图片，内置 API 调用限流。
+
+    Args:
+        prompts_and_paths: [(prompt, output_path), ...] 列表
+        style:             风格包装器
+        retries:           每张图片的重试次数
+        timeout:           每张图片的超时秒数
+        inter_call_delay:  调用间隔秒数（避免 429）
+
+    Returns:
+        list[bool]: 与输入顺序一致的生成结果（True=成功, False=失败）
+    """
+    results: list[bool] = []
+    for i, (prompt, path) in enumerate(prompts_and_paths):
+        if i > 0:
+            _rate_limit_wait(inter_call_delay)
+        ok = generate_image(
+            prompt, path,
+            retries=retries, timeout=timeout, style=style,
+        )
+        results.append(ok)
+    return results

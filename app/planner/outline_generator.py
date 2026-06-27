@@ -25,7 +25,7 @@ def generate_outline(topic: str, template_type: str = "product") -> str:
     if template_type == "design":
         user_prompt = (
             f"请为产品「{topic}」生成一份工业设计推演大纲。\n\n"
-            f"要求：6-7 个章节，聚焦设计语言、人机工程、CMF、交互与结构堆叠。"
+            f"要求：6-7 个章节，聚焦设计语言、人机工程、CMF、交互、结构堆叠、多概念方案对比与选型。"
         )
     else:
         user_prompt = (

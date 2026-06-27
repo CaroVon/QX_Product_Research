@@ -144,7 +144,7 @@ def _write_text_section(
     llm = get_llm()
     logger.info("→ [📝 文本撰写] 正在深度撰写章节【%s】(template=%s, k=%d)...", section_title, template_type, search_depth)
 
-    retriever_k = max(5, search_depth)  # 最少获取 5 篇
+    retriever_k = max(12, search_depth)  # 最少获取 12 篇，充分调用知识库
     docs = retrieve(f"{topic} {section_title}", k=retriever_k, project_id=project_id)
     context_str, ref_map = build_context_with_citations(docs)
 
@@ -160,11 +160,15 @@ def _write_text_section(
 
 请直接输出 Markdown 内容，务必从 `## {section_title}` 开始，不要有任何前缀。
 
-【格式严控要求（为 PPT 排版优化）】：
+【内容深度要求（最高优先级）】：
+- 充分综合上方【参考资料】中的**全部**信息，覆盖关键数据与事实，不得遗漏重要的数字、型号、价格、规格、份额、时间等硬信息。
+- 每个要点都要有具体数据/事实/案例支撑，杜绝空泛口号；内容要丰富、信息密集。
+
+【格式要求（为 PPT 排版优化，但不牺牲内容完整度）】：
 1. 必须使用 Markdown 格式。
-2. 严禁长篇大论！每个段落不得超过 3 行（约 80 字），多用 Bullet points (无序列表 - ) 进行观点拆解。
-3. 如有数据对比，强制使用 Markdown 表格输出。
-4. 你的输出将直接转化为幻灯片，请保持内容的高度概括性和排版呼吸感。
+2. 以 Bullet points（无序列表 - ）为主拆解观点；单个段落控制在 2-4 行（约 100 字内），但可使用多个要点充分展开，保证信息密度。
+3. 如有数据对比，强制使用 Markdown 表格输出，并尽量填满有意义的对比数据。
+4. 你的输出将直接转化为幻灯片，请兼顾排版呼吸感与内容充实度。
 5. 【最高优先级：数据表格规范】如果涉及到对比数据，必须使用标准 Markdown 表格语法（使用 `|` 分隔）。
 绝不允许使用逗号分隔的 CSV 格式！
 绝不允许使用引号 `" "` 包围单元格内容！
@@ -185,6 +189,147 @@ def _write_text_section(
     return final_content
 
 
+# ══════════════════════════════════════════════════════════
+# 工业设计推演：概念图标签提取与批量生图
+# ══════════════════════════════════════════════════════════
+
+_IMAGE_PROMPT_PATTERN = re.compile(r'\[IMAGE_PROMPT:\s*(.+?)\]', re.DOTALL)
+
+
+def _extract_image_prompts(content: str) -> list[tuple[str, str]]:
+    """
+    从 LLM 输出中提取 [IMAGE_PROMPT: ...] 标签。
+
+    Returns:
+        [(full_tag_text, prompt_body), ...] 按出现顺序排列
+    """
+    return [(m.group(0), m.group(1).strip()) for m in _IMAGE_PROMPT_PATTERN.finditer(content)]
+
+
+def _process_design_images(
+    content: str,
+    topic: str,
+    section_title: str,
+) -> str:
+    """
+    后处理设计模板章节输出：提取 [IMAGE_PROMPT:...] 标签 → 调用图像生成 → 替换为图片引用。
+
+    - 每张图片独立生成，单张失败不影响其他
+    - 内置 API 限流间隔
+    - 无标签时为 no-op，直接返回原文
+    """
+    matches = list(_IMAGE_PROMPT_PATTERN.finditer(content))
+
+    if not matches:
+        return content
+
+    safe = _safe_topic(topic)
+    section_slug = re.sub(r'[^a-zA-Z0-9一-鿿]', '_', section_title)[:30]
+
+    result_parts: list[str] = []
+    last_end = 0
+
+    for idx, match in enumerate(matches, start=1):
+        # 追加标签之前的文本
+        result_parts.append(content[last_end:match.start()])
+
+        prompt_text = match.group(1).strip()
+        image_path = f"outputs/images/{safe}_{section_slug}_concept_{idx}.png"
+
+        logger.info(
+            "→ [工业设计生图 %d/%d] %s...",
+            idx, len(matches), prompt_text[:80],
+        )
+
+        # API 限流：除第一张外等待间隔
+        if idx > 1:
+            from app.llm.client import _rate_limit_wait
+            _rate_limit_wait(3.0)
+
+        from app.llm.client import generate_image
+        success = generate_image(
+            prompt_text, image_path,
+            retries=2, timeout=120,
+            style="industrial_design",
+        )
+
+        if success:
+            result_parts.append(
+                f"\n\n![概念方案{idx} - {section_title}](../{image_path})\n\n"
+                f"> *图注：AI 工业设计概念渲染 —— 方案{idx}。"
+                f"16:9 横版高精度产品概念图，由硅基流动图像引擎生成。*\n"
+            )
+        else:
+            result_parts.append(
+                f"\n\n> ⚠️ *[概念方案{idx} 生图失败 —— "
+                f"请检查 SILICONFLOW_API_KEY 与网络连接]*\n"
+            )
+
+        last_end = match.end()
+
+    # 追加剩余文本
+    result_parts.append(content[last_end:])
+
+    return ''.join(result_parts)
+
+
+def _write_design_section(
+    topic: str,
+    section_title: str,
+    project_id: str | None = None,
+    search_depth: int = 10,
+) -> str:
+    """
+    工业设计推演专用章节撰写器。
+
+    流程：RAG 检索 → LLM 推演（含思维链路 + 多概念方案 + [IMAGE_PROMPT:...] 标签）
+    → 图片后处理 → 引用溯源。
+    """
+    llm = get_llm()
+    concept_count = 3  # 每章提出的概念方案数
+
+    logger.info(
+        "→ [工业设计推演] 正在深度推演章节【%s】(k=%d, concepts=%d)...",
+        section_title, search_depth, concept_count,
+    )
+
+    retriever_k = max(12, search_depth)
+    docs = retrieve(f"{topic} {section_title}", k=retriever_k, project_id=project_id)
+    context_str, ref_map = build_context_with_citations(docs)
+
+    # 将 {concept_count} 注入系统 Prompt
+    sys_prompt = PromptFactory.get_section_prompt("design")
+    if "{concept_count}" in sys_prompt:
+        sys_prompt = sys_prompt.replace("{concept_count}", str(concept_count))
+
+    prompt = f"""{sys_prompt}
+
+【产品研究主题】: {topic}
+【当前撰写章节】: {section_title}
+【概念方案数量要求】: 请提出恰好 {concept_count} 个差异化的概念方案
+
+【参考资料】:
+{context_str}
+
+请直接输出 Markdown 内容，务必从 `## {section_title}` 开始，不要有任何前缀。
+
+【最高优先级提醒】：
+1. 思维推演：展示完整的设计推理链路（从约束推导到形态决策的全过程）
+2. 概念方案：{concept_count} 个差异化的方案，每个方案紧跟独占一行的 [IMAGE_PROMPT: ...]
+3. 技术方向：给出结构堆叠、制造工艺、表面处理的具体路线
+4. 设计需求总结：章节末尾用 "### 设计需求总结" 列出 4+ 条可量化的设计约束"""
+
+    response = llm.invoke(prompt)
+    raw_content = _clean_llm_output(response.content, section_title)
+
+    # 后处理：提取 [IMAGE_PROMPT:...] 标签并生成实际图片
+    processed_content = _process_design_images(raw_content, topic, section_title)
+
+    # 引用溯源
+    final_content = resolve_and_append_citations(processed_content, ref_map)
+    return final_content
+
+
 def write_section(
     topic: str,
     section_title: str,
@@ -195,9 +340,10 @@ def write_section(
     """
     撰写单个章节。
 
-    根据章节标题关键词自动路由：
-    - 多模态绘图章节 → 图像生成引擎
-    - 文本章节 → RAG 检索 + LLM 深度撰写
+    路由策略：
+    - 工业设计推演模板 → 专用设计推演写入器（思维链路 + 多概念方案 + 批量生图）
+    - 产品预研模板 + 绘图关键词章节 → 单图图像生成引擎
+    - 产品预研模板 + 普通章节 → RAG 检索 + LLM 深度撰写
 
     Args:
         topic:         产品研究主题
@@ -210,6 +356,15 @@ def write_section(
     Returns:
         Markdown 格式的章节内容。
     """
+    # 工业设计推演模板：所有章节走专用推演写入器
+    if template_type == "design":
+        return _write_design_section(
+            topic, section_title,
+            project_id=project_id,
+            search_depth=search_depth,
+        )
+
+    # 产品预研模板：现有关键词路由
     if _is_image_section(section_title):
         return _write_image_section(topic, section_title)
     else:

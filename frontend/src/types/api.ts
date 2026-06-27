@@ -344,3 +344,32 @@ export interface UploadDocsResponse {
   chunk_count: number
   message: string
 }
+
+// ─── 🆕 图片搜索 (Image Search) ─────────────────────────────────
+
+export interface ImageSearchRequest {
+  query: string
+  max_results?: number
+  search_depth?: number
+}
+
+export interface ImageResult {
+  id: string
+  query: string
+  title: string
+  image_url: string
+  source_url: string | null
+  search_depth: number
+  created_at: string
+}
+
+export interface ImageSearchResponse {
+  images: ImageResult[]
+  total_count: number
+}
+
+export interface ProjectImagesResponse {
+  project_id: string
+  images: ImageResult[]
+  total_count: number
+}

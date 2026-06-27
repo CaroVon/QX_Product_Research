@@ -1,0 +1,20 @@
+# ============================================================
+# Netlify 部署配置
+# ============================================================
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# ─── API 代理（Edge Function）──────────────────────────────────
+# 所有 /api/* 请求由 api-proxy Edge Function 转发到 BACKEND_URL
+[[edge_functions]]
+  path = "/api/*"
+  function = "api-proxy"
+
+# ─── SPA 回退 ──────────────────────────────────────────────────
+# 所有非 API 路径 → index.html（React Router 处理路由）
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

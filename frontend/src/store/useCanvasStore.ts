@@ -20,7 +20,7 @@ import { temporal } from 'zundo'
 
 export interface CanvasElement {
   id: string
-  type: 'text' | 'rect' | 'image' | 'table' | 'circle' | 'line'
+  type: 'text' | 'rect' | 'image' | 'table' | 'circle' | 'line' | 'placeholder'
   x: number
   y: number
   width: number
@@ -29,6 +29,12 @@ export interface CanvasElement {
   text?: string
   src?: string // 图片专用
   tableData?: string[][] // 表格专用
+
+  // 表格样式（可选，渲染器内有默认兜底）
+  headerFill?: string       // 表头背景色
+  headerColor?: string      // 表头文字色
+  rowAltFill?: string       // 斑马纹偶数行背景
+  tableBorderColor?: string // 单元格边框色
 
   // 排版字段
   fontWeight?: string      // 'normal' | 'bold'
@@ -44,7 +50,18 @@ export interface CanvasElement {
   points?: number[] // 线条专用 [x1,y1,x2,y2,...]
 
   // 元素分类（用于编辑器过滤非交互装饰元素）
-  name?: string // 'decor' = 不可选中的装饰元素
+  name?: string // 'decor' | 'arrangement-decor' = 不可选中的装饰元素
+
+  // 🆕 v6: 排列多样性元数据
+  arrangement?: string  // 排列格式名称 (vertical, card_grid, timeline, ...)
+  groupId?: string      // 同组元素共享 ID（用于组选择和组拖拽）
+  groupIndex?: number   // 组内序号（0-based）
+
+  // 图片裁剪 (非破坏性，相对图片自身的裁剪区域)
+  clipX?: number
+  clipY?: number
+  clipWidth?: number
+  clipHeight?: number
 }
 
 export interface CanvasState {
@@ -53,6 +70,8 @@ export interface CanvasState {
   selectedElementIds: string[]
   editingElementId: string | null
   clipboard: CanvasElement | null
+  clipModeElementId: string | null
+  copiedSlide: CanvasElement[] | null
 
   // ─── 现有 Actions ──────────────────────────────────────────
   updateElement: (page: number, id: string, attrs: Partial<CanvasElement>) => void
@@ -68,6 +87,9 @@ export interface CanvasState {
   copyElement: (id: string) => void
   pasteElement: (page: number) => void
   moveLayer: (page: number, id: string, direction: 'up' | 'down' | 'top' | 'bottom') => void
+  setClipMode: (elementId: string | null) => void
+  copySlide: (page: number) => void
+  pasteSlide: (afterPage: number) => void
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -82,6 +104,8 @@ export const useCanvasStore = create<CanvasState>()(
       selectedElementIds: [],
       editingElementId: null,
       clipboard: null,
+      clipModeElementId: null,
+      copiedSlide: null,
 
       // ─── 现有 Actions ────────────────────────────────────
       updateElement: (page, id, attrs) =>
@@ -218,6 +242,41 @@ export const useCanvasStore = create<CanvasState>()(
             slides: { ...state.slides, [page]: pageElements },
           }
         }),
+
+      setClipMode: (elementId) => set({ clipModeElementId: elementId }),
+
+      copySlide: (page) =>
+        set((state) => {
+          const sourceElements = state.slides[page] || []
+          const cloned = sourceElements.map((el) =>
+            JSON.parse(JSON.stringify(el)),
+          )
+          return { copiedSlide: cloned }
+        }),
+
+      pasteSlide: (afterPage) =>
+        set((state) => {
+          if (!state.copiedSlide) return {}
+          const cloned = state.copiedSlide.map((el) => ({
+            ...JSON.parse(JSON.stringify(el)),
+            id: Math.random().toString(36).substring(2, 11),
+          }))
+          const newSlides: { [p: number]: CanvasElement[] } = {}
+          const pages = Object.keys(state.slides)
+            .map(Number)
+            .sort((a, b) => a - b)
+          for (let i = pages.length - 1; i >= 0; i--) {
+            const p = pages[i]
+            if (p > afterPage) {
+              newSlides[p + 1] = state.slides[p]
+            } else {
+              newSlides[p] = state.slides[p]
+            }
+          }
+          newSlides[afterPage + 1] = cloned
+          return { slides: newSlides, activePage: afterPage + 1 }
+        }),
+
     }),
     {
       limit: 50, // 最多保留 50 步历史

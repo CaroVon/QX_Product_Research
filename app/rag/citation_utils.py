@@ -46,7 +46,14 @@ def resolve_and_append_citations(llm_output, ref_map):
     used_refs = set(re.findall(r'\[\^?(\d+)\]', llm_output))
 
     if not used_refs:
-        return llm_output  # 如果 LLM 没用任何引用，直接返回原文本
+        # 兜底：LLM 完全没用引用时，至少附上前 2 个来源的脚注定义，
+        # 保证 Document 快照与报告组装仍带有可溯源信息（避免完全无引用）。
+        if not ref_map:
+            return llm_output
+        footer = "\n\n---\n"
+        for ref_id in sorted(ref_map.keys())[:2]:
+            footer += f"[^{ref_id}]: {ref_map[ref_id]}\n"
+        return llm_output + footer
 
     # 构建脚注定义（纯 Markdown footnote 语法，不带 h3 标题）
     footer = "\n\n---\n"

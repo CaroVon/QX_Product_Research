@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     CONCEPT_IMAGE_WIDTH: str = Field(default="1024")
     CONCEPT_IMAGE_HEIGHT: str = Field(default="576")
 
+    # ─── 工业设计推演：概念图批量生成配置 ─────────────────────────
+    DESIGN_MAX_CONCEPTS_PER_CHAPTER: int = Field(default=3)
+    DESIGN_IMAGE_INTER_CALL_DELAY: float = Field(default=3.0)
+
     # ─── HuggingFace / Embedding ─────────────────────────────────
     HF_ENDPOINT: str = Field(default="https://hf-mirror.com")
     EMBEDDING_MODEL_PATH: str = Field(default="BAAI/bge-small-zh-v1.5")

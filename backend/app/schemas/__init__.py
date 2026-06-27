@@ -433,3 +433,62 @@ class UploadDocsResponse(BaseModel):
     project_id: uuid.UUID = Field(..., description="项目 UUID")
     chunk_count: int = Field(..., description="成功解析并入库的文本切片数量")
     message: str = Field(..., description="操作结果说明")
+
+
+# ================================================================
+# 🆕 图片搜索 (Image Search) Schemas
+# ================================================================
+
+class ImageSearchRequest(BaseModel):
+    """图片搜索请求"""
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="图片搜索关键词",
+        examples=["iPhone 产品设计"],
+    )
+    max_results: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="期望返回的图片数量（实际取决于搜索引擎）",
+    )
+    search_depth: int = Field(
+        default=10,
+        ge=5,
+        le=20,
+        description="搜索强度: 5=快速, 10=标准, 15=深度, 20=极致",
+    )
+
+
+class ImageResultResponse(BaseModel):
+    """单条图片搜索结果"""
+    id: uuid.UUID = Field(..., description="图片记录 UUID")
+    query: str = Field(..., description="搜索关键词")
+    title: str = Field(..., description="图片标题")
+    image_url: str = Field(..., description="图片直链 URL")
+    source_url: str | None = Field(None, description="来源网页 URL")
+    search_depth: int = Field(default=10, description="搜索强度")
+    created_at: datetime = Field(..., description="创建时间")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ImageSearchResponse(BaseModel):
+    """图片搜索响应"""
+    images: list[ImageResultResponse] = Field(
+        default_factory=list,
+        description="本次搜索返回的图片列表",
+    )
+    total_count: int = Field(0, description="本次搜索返回的图片总数")
+
+
+class ProjectImagesResponse(BaseModel):
+    """项目图片库响应"""
+    project_id: uuid.UUID = Field(..., description="项目 UUID")
+    images: list[ImageResultResponse] = Field(
+        default_factory=list,
+        description="该项目所有已搜索保存的图片",
+    )
+    total_count: int = Field(0, description="图片总数")

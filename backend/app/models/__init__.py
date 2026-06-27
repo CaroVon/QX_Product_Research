@@ -8,6 +8,7 @@ from app.models.document import Document
 from app.models.document_block import DocumentBlock
 from app.models.user import User
 from app.models.project_log import ProjectLog, LogLevel
+from app.models.project_image import ProjectImage
 
 __all__ = [
     "Base", "orm_to_dict",
@@ -16,5 +17,6 @@ __all__ = [
     "Document",
     "DocumentBlock",
     "ProjectLog", "LogLevel",
+    "ProjectImage",
     "User",
 ]

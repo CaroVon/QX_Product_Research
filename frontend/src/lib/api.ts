@@ -24,6 +24,9 @@ import type {
   EditorChatRequest,
   ExportPdfRequest,
   UploadDocsResponse,
+  ImageResult,
+  ImageSearchResponse,
+  ProjectImagesResponse,
 } from '@/types/api'
 
 const API_BASE = '/api/v1'
@@ -221,6 +224,55 @@ export const projectsApi = {
     return request(`/projects/${projectId}/export-pdf`, {
       method: 'POST',
       body: JSON.stringify(data),
+    })
+  },
+
+  /** 🆕 上传画布图片素材，返回持久化后的公开 URL */
+  async uploadAsset(projectId: string, file: File): Promise<{ url: string }> {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const res = await fetch(`${API_BASE}/projects/${projectId}/assets`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try {
+        const body = await res.json()
+        detail = body.detail ?? detail
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, detail)
+    }
+
+    return res.json()
+  },
+
+  /** 🔍 搜索图片（DuckDuckGo），结果持久化到项目图片库 */
+  async searchImages(
+    projectId: string,
+    data: { query: string; max_results?: number; search_depth?: number },
+  ): Promise<ImageSearchResponse> {
+    return request(`/projects/${projectId}/search-images`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  /** 🖼️ 获取项目图片库（所有已搜索保存的图片） */
+  async getProjectImages(
+    projectId: string,
+  ): Promise<ProjectImagesResponse> {
+    return request(`/projects/${projectId}/images`)
+  },
+
+  /** 🗑️ 从图片库中删除单张图片 */
+  async deleteProjectImage(projectId: string, imageId: string): Promise<{ detail: string }> {
+    return request(`/projects/${projectId}/images/${imageId}`, {
+      method: 'DELETE',
     })
   },
 }

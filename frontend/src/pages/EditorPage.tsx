@@ -36,6 +36,7 @@ import {
 import { Button } from '@/components/common/button'
 import { CanvasSlideEditor } from '@/components/editor/CanvasSlideEditor'
 import type { KonvaCanvasInstance } from '@/components/editor/CanvasSlideEditor'
+import { ImageGallery } from '@/components/editor/ImageGallery'
 import { cn } from '@/lib/utils'
 import {
   convertBlocksToKonvaSlides,
@@ -341,10 +342,13 @@ export function EditorPage() {
         format: [1280, 720],
       })
 
+      // 以 Zustand store 为准（AiPanel 等可能直接写入 store），回退到本地 slides
+      const storeSlides = useCanvasStore.getState().slides
       for (let i = 0; i < slides.length; i++) {
+        const elements = storeSlides[i] ?? slides[i].elements
         // 使用离屏原生 Konva Stage 渲染并抓取（Promise 保证完成）
         const dataUrl = await canvasRef.current.capturePage(
-          slides[i].elements,
+          elements,
           1280,
           720,
           2,
@@ -453,26 +457,32 @@ export function EditorPage() {
 
       {/* ─── 主体：编辑器 + AI 面板 ────────────────────────── */}
       <div className="flex flex-1 min-h-0">
-        {/* Canvas 编辑器 */}
-        <div className="flex-1 min-w-0">
-          {slides.length === 0 ? (
-            <div className="flex h-full items-center justify-center">
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Loader2 className="h-8 w-8 animate-spin" />
-                <p className="text-sm">正在准备幻灯片内容...</p>
+        {/* 左侧：Canvas 编辑器 + 图片素材库（垂直布局） */}
+        <div className="flex flex-col flex-1 min-w-0 min-h-0">
+          {/* Canvas 编辑器 */}
+          <div className="flex-1 min-h-0">
+            {slides.length === 0 ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-3 text-muted-foreground">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                  <p className="text-sm">正在准备幻灯片内容...</p>
+                </div>
               </div>
-            </div>
-          ) : (
-            <CanvasSlideEditor
-              slides={slides}
-              activeIndex={activeIndex}
-              onActiveIndexChange={setActiveIndex}
-              onSlidesChange={setSlides}
-              canvasRef={canvasRef}
-              readOnly={false}
-              showToolbar={true}
-            />
-          )}
+            ) : (
+              <CanvasSlideEditor
+                slides={slides}
+                activeIndex={activeIndex}
+                onActiveIndexChange={setActiveIndex}
+                onSlidesChange={setSlides}
+                canvasRef={canvasRef}
+                readOnly={false}
+                showToolbar={true}
+                projectId={projectId}
+              />
+            )}
+          </div>
+          {/* 图片素材库（编辑器下方） */}
+          <ImageGallery projectId={projectId!} />
         </div>
 
         {/* AI 助手面板（可折叠） */}

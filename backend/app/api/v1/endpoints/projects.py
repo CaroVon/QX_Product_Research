@@ -47,7 +47,12 @@ from app.schemas import (
     ProjectLogResponse,
     ProjectLogListResponse,
     ExportPdfRequest,
+    ImageSearchRequest,
+    ImageSearchResponse,
+    ImageResultResponse,
+    ProjectImagesResponse,
 )
+from app.models.project_image import ProjectImage
 from app.models.project_log import ProjectLog
 from app.tasks.report_workflow import (
     run_full_report_workflow,
@@ -1064,7 +1069,7 @@ async def upload_slide_asset(
     🖼️ **幻灯片图片暂存 API**：接收用户在 Tiptap 编辑器中粘贴或上传的本地图片，
     保存至静态目录并返回公开访问 URL，供编辑器直接插入。
 
-    返回格式：`{"url": "/outputs/assets/{project_id}/{uuid_filename}"}`
+    返回格式：`{"url": "/api/v1/files/assets/{project_id}/{uuid_filename}"}`
     """
     settings = get_settings()
     asset_dir = os.path.join(settings.OUTPUT_DIR, "assets", str(project_id))
@@ -1084,7 +1089,7 @@ async def upload_slide_asset(
                 project_id, safe_filename, len(content))
 
     # 返回给 Tiptap 编辑器直接插入的公开访问 URL
-    public_url = f"/outputs/assets/{project_id}/{safe_filename}"
+    public_url = f"/api/v1/files/assets/{project_id}/{safe_filename}"
     return {"url": public_url}
 
 
@@ -1221,3 +1226,174 @@ async def upload_project_logo(
         "logo_url": public_url,
         "message": "Logo 已成功上传",
     }
+
+
+# ================================================================
+# 🆕 POST /api/v1/projects/{project_id}/search-images —— 图片搜索
+# ================================================================
+
+def _map_search_depth_to_max_results(search_depth: int) -> int:
+    """将 search_depth (5-20) 映射为合理的图片搜索数量"""
+    if search_depth <= 5:
+        return 2
+    elif search_depth <= 10:
+        return 4
+    elif search_depth <= 15:
+        return 6
+    else:
+        return 8
+
+
+@router.post("/{project_id}/search-images", response_model=ImageSearchResponse)
+async def search_project_images(
+    project_id: uuid.UUID,
+    body: ImageSearchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    🔍 **图片搜索 API**：使用 DuckDuckGo 搜索与查询相关的图片，
+    将结果持久化到 project_images 表，返回搜索结果供前端 ImageGallery 展示。
+
+    `search_depth` 控制搜索强度：浅度搜索返回较少结果，深度搜索返回较多结果。
+    """
+    # 验证项目存在
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"项目 {project_id} 不存在",
+        )
+
+    # 根据 search_depth 计算 max_results
+    effective_max = _map_search_depth_to_max_results(body.search_depth)
+    if body.max_results and body.max_results < effective_max:
+        effective_max = body.max_results
+
+    # 调用 DuckDuckGo 图片搜索
+    try:
+        from app.search.image_search import search_images
+        results = search_images(body.query, max_results=effective_max)
+    except Exception as e:
+        logger.error("图片搜索失败 | query=%s | error=%s", body.query, str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"图片搜索失败: {str(e)}",
+        )
+
+    # 持久化搜索结果
+    saved_images: list[ProjectImage] = []
+    for r in results:
+        img = ProjectImage(
+            project_id=project_id,
+            query=body.query,
+            title=r.get("title", ""),
+            image_url=r.get("image", ""),
+            source_url=r.get("url", ""),
+            thumbnail_url=r.get("image", ""),  # DuckDuckGo 返回相同 URL
+            search_depth=body.search_depth,
+        )
+        db.add(img)
+        saved_images.append(img)
+
+    await db.commit()
+
+    # Refresh 以获取 server_default 生成的 id / created_at
+    for img in saved_images:
+        await db.refresh(img)
+
+    images_resp = [
+        ImageResultResponse(
+            id=img.id,
+            query=img.query,
+            title=img.title,
+            image_url=img.image_url,
+            source_url=img.source_url,
+            search_depth=img.search_depth,
+            created_at=img.created_at,
+        )
+        for img in saved_images
+    ]
+
+    logger.info(
+        "图片搜索完成 | project=%s | query=%s | results=%d",
+        project_id, body.query, len(images_resp),
+    )
+
+    return ImageSearchResponse(images=images_resp, total_count=len(images_resp))
+
+
+# ================================================================
+# 🆕 GET /api/v1/projects/{project_id}/images —— 获取项目图片库
+# ================================================================
+
+@router.get("/{project_id}/images", response_model=ProjectImagesResponse)
+async def get_project_images(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    🖼️ **项目图片库 API**：返回该项目所有已搜索并保存的图片，
+    按创建时间降序排列，供前端 ImageGallery 面板加载。
+    """
+    result = await db.execute(
+        select(ProjectImage)
+        .where(ProjectImage.project_id == project_id)
+        .order_by(ProjectImage.created_at.desc())
+    )
+    images = result.scalars().all()
+
+    images_resp = [
+        ImageResultResponse(
+            id=img.id,
+            query=img.query,
+            title=img.title,
+            image_url=img.image_url,
+            source_url=img.source_url,
+            search_depth=img.search_depth,
+            created_at=img.created_at,
+        )
+        for img in images
+    ]
+
+    return ProjectImagesResponse(
+        project_id=project_id,
+        images=images_resp,
+        total_count=len(images_resp),
+    )
+
+
+# ================================================================
+# 🆕 DELETE /api/v1/projects/{project_id}/images/{image_id} —— 删除图片
+# ================================================================
+
+@router.delete("/{project_id}/images/{image_id}", response_model=MessageResponse)
+async def delete_project_image(
+    project_id: uuid.UUID,
+    image_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    🗑️ **删除图片库条目**：从 project_images 表中移除指定图片记录。
+    """
+    result = await db.execute(
+        select(ProjectImage).where(
+            ProjectImage.id == image_id,
+            ProjectImage.project_id == project_id,
+        )
+    )
+    img = result.scalar_one_or_none()
+    if img is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"图片 {image_id} 不存在或不属于该项目",
+        )
+
+    await db.delete(img)
+    await db.commit()
+
+    logger.info("图片已删除 | project=%s | image_id=%s", project_id, image_id)
+
+    return MessageResponse(detail=f"图片 {image_id} 已删除")
