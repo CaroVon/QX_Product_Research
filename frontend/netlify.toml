@@ -6,8 +6,14 @@
   command = "npx vite build"
   publish = "dist"
 
-# ─── API 代理（Edge Function）──────────────────────────────────
-# 所有 /api/* 请求由 api-proxy Edge Function 转发到 BACKEND_URL
+# ─── 密码认证（最先执行）──────────────────────────────────────
+# 免费 Basic Auth，替代付费的 Visitor Access
+[[edge_functions]]
+  path = "/*"
+  function = "auth"
+
+# ─── API 代理 ──────────────────────────────────────────────────
+# 所有 /api/* 请求由 api-proxy 转发到 BACKEND_URL
 [[edge_functions]]
   path = "/api/*"
   function = "api-proxy"
