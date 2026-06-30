@@ -78,3 +78,6 @@ test_*.db
 
 # fix
 fix/
+
+# caveman
+.caveman/
