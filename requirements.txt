@@ -62,7 +62,7 @@ pytest-asyncio==1.4.0
 PyMuPDF==1.23.8          # PDF 解析 (app/rag/local_parser.py)
 
 # --- Image Search ---
-duckduckgo-search>=5.3.1 # DuckDuckGo 图片搜索 (app/search/image_search.py)
+ddgs>=9.14.0 # DuckDuckGo 图片搜索 (app/search/image_search.py) — v9.x API: DDGS().images(query, ...)
 
 # --- Utilities ---
 watchfiles==1.2.0

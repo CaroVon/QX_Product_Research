@@ -27,6 +27,7 @@ from app.models.project import Project, ProjectStatus
 from app.models.document import Document
 from app.models.document_block import DocumentBlock
 from app.models.project_log import ProjectLog, LogLevel
+from app.models.project_image import ProjectImage
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,10 @@ class ProjectRepo:
     def get_project_search_depth(self, project_id: str) -> int:
         """获取项目的搜索强度，默认返回 10。"""
         return getattr(self.get_project(project_id), 'search_depth', 10) or 10
+
+    def get_project_images_per_page(self, project_id: str) -> int:
+        """🆕 获取项目每页自动搜索图片数量，默认返回 2。"""
+        return getattr(self.get_project(project_id), 'images_per_page', 2) or 2
 
     # ══════════════════════════════════════════════════════════
     # 项目状态更新
@@ -330,6 +335,39 @@ class ProjectRepo:
             session.add(doc)
             session.commit()
             logger.info("[Repo] 保存章节文档 | project=%s | section=%s", project_id, section_title)
+
+    # ══════════════════════════════════════════════════════════
+    # 🆕 项目图片库 (ProjectImage)
+    # ══════════════════════════════════════════════════════════
+
+    def save_project_image(
+        self,
+        project_id: str,
+        query: str,
+        title: str,
+        image_url: str,
+        source_url: str | None = None,
+        thumbnail_url: str | None = None,
+        search_depth: int = 10,
+        page_number: int | None = None,
+    ) -> ProjectImage:
+        """🆕 持久化一张项目图片记录（供自动搜索使用）。"""
+        pid = self._pid(project_id)
+        with Session(self._engine) as session:
+            img = ProjectImage(
+                project_id=pid,
+                query=query,
+                title=title,
+                image_url=image_url,
+                source_url=source_url,
+                thumbnail_url=thumbnail_url or image_url,
+                search_depth=search_depth,
+                page_number=page_number,
+            )
+            session.add(img)
+            session.commit()
+            session.expunge(img)
+            return img
 
     # ══════════════════════════════════════════════════════════
     # 项目时间轴日志 (ProjectLog)

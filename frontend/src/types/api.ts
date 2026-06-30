@@ -18,6 +18,7 @@ export interface ProjectCreateRequest {
   topic: string
   template_type?: string  // 模板类型："product"（默认）或 "design"
   search_depth?: number   // 搜索强度：5=快速, 10=标准, 15=深度, 20=极致
+  images_per_page?: number  // 每页自动搜索图片数量：0=关闭, 默认 2
 }
 
 export interface ProjectResponse {
@@ -162,6 +163,7 @@ export interface ProjectStatusResponse {
   outline_content: string | null
   pdf_path: string | null
   search_depth: number
+  images_per_page: number
   logo_url: string | null
   current_step: CurrentStep | null
   progress: ProgressInfo
@@ -351,6 +353,7 @@ export interface ImageSearchRequest {
   query: string
   max_results?: number
   search_depth?: number
+  page_number?: number  // 关联页码（自动搜索时由后端传入）
 }
 
 export interface ImageResult {
@@ -360,6 +363,7 @@ export interface ImageResult {
   image_url: string
   source_url: string | null
   search_depth: number
+  page_number: number | null  // 关联页码，手动搜索为 null
   created_at: string
 }
 

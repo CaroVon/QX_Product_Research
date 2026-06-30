@@ -146,6 +146,32 @@ def write_single_section(
             section_order=section_order,
         )
 
+        # ─── 5. 🆕 自动图片搜索（每节写完后搜索相关图片并持久化）──
+        try:
+            images_per_page = repo.get_project_images_per_page(project_id)
+            if images_per_page > 0:
+                from app.search.image_search import search_images
+                logger.info("[IMAGE-SEARCH] 自动搜索图片 | project=%s | section='%s' | count=%d | page=%d",
+                            project_id, section_title, images_per_page, section_order)
+                img_results = search_images(section_title, max_results=images_per_page)
+                for r in img_results:
+                    repo.save_project_image(
+                        project_id=project_id,
+                        query=section_title,
+                        title=r.get("title", ""),
+                        image_url=r.get("image", ""),
+                        source_url=r.get("url", ""),
+                        thumbnail_url=r.get("image", ""),
+                        search_depth=10,
+                        page_number=section_order,
+                    )
+                logger.info("[IMAGE-SEARCH] 图片搜索完成 | project=%s | section='%s' | found=%d",
+                            project_id, section_title, len(img_results))
+        except Exception as img_err:
+            # 图片搜索失败不阻塞撰写流程
+            logger.warning("[IMAGE-SEARCH] 自动图片搜索失败（非致命）| project=%s | section='%s' | error=%s",
+                           project_id, section_title, str(img_err))
+
         logger.info("[TASK] 章节撰写完成 | project=%s | section='%s' | len=%d",
                     project_id, section_title, len(content))
         return content

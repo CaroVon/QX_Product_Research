@@ -5,7 +5,7 @@
 """
 import logging
 from typing import List
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def search_images(query: str, max_results: int = 3) -> List[dict]:
     try:
         ddgs = DDGS()
         results = ddgs.images(
-            keywords=query,
+            query,
             region="wt-wt",
             safesearch="moderate",
             max_results=max_results,

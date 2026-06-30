@@ -482,7 +482,12 @@ export function EditorPage() {
             )}
           </div>
           {/* 图片素材库（编辑器下方） */}
-          <ImageGallery projectId={projectId!} />
+          <ImageGallery
+            projectId={projectId!}
+            activePage={activeIndex}
+            projectStatus={statusData?.project_status}
+            imagesPerPage={statusData?.images_per_page}
+          />
         </div>
 
         {/* AI 助手面板（可折叠） */}

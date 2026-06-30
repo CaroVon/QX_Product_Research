@@ -78,6 +78,13 @@ class ProjectCreateRequest(BaseModel):
         description="搜索强度: 5=快速, 10=标准, 15=深度, 20=极致",
         examples=[5, 10, 15, 20],
     )
+    images_per_page: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="每页自动搜索图片数量: 0=关闭, 默认 2",
+        examples=[0, 1, 2, 3, 5],
+    )
 
 
 class ProjectResponse(BaseModel):
@@ -219,6 +226,7 @@ class ProjectStatusResponse(BaseModel):
     outline_content: str | None = Field(None, description="暂存大纲内容（WAITING_OUTLINE_APPROVAL 时有值）")
     pdf_path: str | None = Field(None, description="PDF 文件相对路径（完成后有值）")
     search_depth: int = Field(default=10, description="搜索强度")
+    images_per_page: int = Field(default=2, description="每页自动搜索图片数量")
     logo_url: str | None = Field(None, description="Logo 图片 URL")
     current_step: dict[str, Any] | None = Field(
         None,
@@ -460,6 +468,11 @@ class ImageSearchRequest(BaseModel):
         le=20,
         description="搜索强度: 5=快速, 10=标准, 15=深度, 20=极致",
     )
+    page_number: int | None = Field(
+        default=None,
+        ge=0,
+        description="关联的幻灯片页码（自动搜索时由后端传入），手动搜索不填",
+    )
 
 
 class ImageResultResponse(BaseModel):
@@ -470,6 +483,7 @@ class ImageResultResponse(BaseModel):
     image_url: str = Field(..., description="图片直链 URL")
     source_url: str | None = Field(None, description="来源网页 URL")
     search_depth: int = Field(default=10, description="搜索强度")
+    page_number: int | None = Field(None, description="关联的幻灯片页码（0-based），手动搜索时为 null")
     created_at: datetime = Field(..., description="创建时间")
 
     model_config = ConfigDict(from_attributes=True)

@@ -30,6 +30,14 @@ const SEARCH_DEPTH_OPTIONS = [
   { value: 20, label: '🚀 极致', desc: '20 篇资料' },
 ] as const
 
+const IMAGES_PER_PAGE_OPTIONS = [
+  { value: 0, label: '关闭', desc: '不搜索' },
+  { value: 1, label: '1 张', desc: '最少' },
+  { value: 2, label: '2 张', desc: '默认' },
+  { value: 3, label: '3 张', desc: '较多' },
+  { value: 5, label: '5 张', desc: '最多' },
+] as const
+
 /**
  * "新建分析" 模态框
  *
@@ -40,6 +48,7 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
   const [topic, setTopic] = useState('')
   const [templateType, setTemplateType] = useState<string>('product')
   const [searchDepth, setSearchDepth] = useState<number>(10)
+  const [imagesPerPage, setImagesPerPage] = useState<number>(2)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
   const createProject = useCreateProject()
@@ -64,6 +73,7 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
     setTopic('')
     setTemplateType('product')
     setSearchDepth(10)
+    setImagesPerPage(2)
     setLogoFile(null)
     setLogoPreview(null)
   }
@@ -76,6 +86,7 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
         topic: topic.trim(),
         template_type: templateType,
         search_depth: searchDepth,
+        images_per_page: imagesPerPage,
       })
 
       // 如果选择了 Logo，在项目创建后上传
@@ -159,6 +170,32 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
                   onClick={() => setSearchDepth(opt.value)}
                   disabled={createProject.isPending}
                   className={radioBtnCls(searchDepth === opt.value)}
+                >
+                  <span className="text-sm font-medium">{opt.label}</span>
+                  <span className="text-[11px] text-muted-foreground leading-tight">
+                    {opt.desc}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ─── 图片搜索强度选择 ──────────────────────────── */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              每页图片
+              <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+                （撰写时自动搜索并关联到每页幻灯片）
+              </span>
+            </label>
+            <div className="grid grid-cols-5 gap-2">
+              {IMAGES_PER_PAGE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setImagesPerPage(opt.value)}
+                  disabled={createProject.isPending}
+                  className={radioBtnCls(imagesPerPage === opt.value)}
                 >
                   <span className="text-sm font-medium">{opt.label}</span>
                   <span className="text-[11px] text-muted-foreground leading-tight">

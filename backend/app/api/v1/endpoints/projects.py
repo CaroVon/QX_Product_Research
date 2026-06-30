@@ -125,6 +125,7 @@ async def create_project(
         status=ProjectStatus.PREPARING_DATA,
         template_type=body.template_type,
         search_depth=body.search_depth,
+        images_per_page=body.images_per_page,
     )
     db.add(project)
     await db.flush()
@@ -244,6 +245,7 @@ async def get_project_status(
         outline_content=project.outline_content,
         pdf_path=project.pdf_path,
         search_depth=project.search_depth,
+        images_per_page=getattr(project, 'images_per_page', 2),
         logo_url=project.logo_url,
         progress=progress,
         current_step=current_step,
@@ -1283,7 +1285,9 @@ async def search_project_images(
             detail=f"图片搜索失败: {str(e)}",
         )
 
-    # 持久化搜索结果
+    # 持久化搜索结果（支持 page_number 关联）
+    # 如果请求中包含 page_number（从自动搜索调用），则关联到对应页码
+    page_num: int | None = getattr(body, 'page_number', None)
     saved_images: list[ProjectImage] = []
     for r in results:
         img = ProjectImage(
@@ -1294,6 +1298,7 @@ async def search_project_images(
             source_url=r.get("url", ""),
             thumbnail_url=r.get("image", ""),  # DuckDuckGo 返回相同 URL
             search_depth=body.search_depth,
+            page_number=page_num,
         )
         db.add(img)
         saved_images.append(img)
@@ -1312,6 +1317,7 @@ async def search_project_images(
             image_url=img.image_url,
             source_url=img.source_url,
             search_depth=img.search_depth,
+            page_number=img.page_number,
             created_at=img.created_at,
         )
         for img in saved_images
@@ -1332,17 +1338,23 @@ async def search_project_images(
 @router.get("/{project_id}/images", response_model=ProjectImagesResponse)
 async def get_project_images(
     project_id: uuid.UUID,
+    page_number: int | None = Query(None, ge=0, description="按页码筛选（可选）"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     🖼️ **项目图片库 API**：返回该项目所有已搜索并保存的图片，
     按创建时间降序排列，供前端 ImageGallery 面板加载。
+    支持通过 `?page_number=0` 筛选特定页的图片。
     """
-    result = await db.execute(
+    stmt = (
         select(ProjectImage)
         .where(ProjectImage.project_id == project_id)
-        .order_by(ProjectImage.created_at.desc())
     )
+    if page_number is not None:
+        stmt = stmt.where(ProjectImage.page_number == page_number)
+    stmt = stmt.order_by(ProjectImage.created_at.desc())
+
+    result = await db.execute(stmt)
     images = result.scalars().all()
 
     images_resp = [
@@ -1353,6 +1365,7 @@ async def get_project_images(
             image_url=img.image_url,
             source_url=img.source_url,
             search_depth=img.search_depth,
+            page_number=img.page_number,
             created_at=img.created_at,
         )
         for img in images

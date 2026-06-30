@@ -1,6 +1,6 @@
 # 🔬 QX Product Research Agent
 
-> **v0.7** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供 Canvas 幻灯片编辑器 + 图片素材库 + 图片裁剪 + 幻灯片管理。
+> **v0.7.1** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供 Canvas 幻灯片编辑器 + 图片素材库 + 图片裁剪 + 幻灯片管理。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136-green.svg)](https://fastapi.tiangolo.com/)
@@ -21,11 +21,17 @@
 
 **v0.7 亮点更新：**
 - 🎨 **Canvas 幻灯片编辑器** — React-Konva 声明式画布，拖拽编辑、裁剪、图层管理
-- 🖼️ **图片素材库** — DuckDuckGo 图片搜索 + 缩略图网格 + 拖拽到画布
+- 🖼️ **图片素材库** — DuckDuckGo 图片搜索 (ddgs v9.x) + 缩略图网格 + 拖拽到画布 + 上下文空状态引导 + DRAFTING 自动轮询
 - ✂️ **图片裁剪** — 内置裁剪模式（四角缩放 + 拖拽移动 + 实时预览）
 - 📋 **幻灯片管理** — 复制/粘贴/新增/删除幻灯片 + 键盘快捷键
 - 🔄 **跨页剪贴板** — Ctrl+Shift+C/V 跨页复制粘贴幻灯片
 - 🧩 **Zustand 状态管理** — clipMode/image clipping/copiedSlide 等原子化状态 + zundo Undo/Redo
+
+**v0.7.1 修复：**
+- 🔧 ddgs 图片搜索库升级至 v9.14.x（修复 `import` 路径和 API 参数兼容性）
+- 🎯 ImageGallery 空状态按项目阶段显示上下文引导提示
+- 🔍 搜索失败与无结果区分提示（HTTP 错误 vs 空结果）
+- 🔄 DRAFTING 阶段 15s 自动轮询刷新图片列表
 
 **目标用户：** 资深产品经理 (PM)、用户体验专家 (UX)、工业设计战略家。
 
@@ -115,7 +121,7 @@
 | 步骤 | 组件 | 说明 |
 |------|------|------|
 | 🔍 全网搜索 | **Tavily Search API** | 输入主题，返回高相关性网页列表及摘要 |
-| 🖼️ 图片搜索 | **DuckDuckGo Images** | 免 API Key，返回产品相关图片直链 |
+| 🖼️ 图片搜索 | **DuckDuckGo Images (ddgs v9.x)** | 免 API Key，返回产品相关图片直链 |
 | 🕷️ 深度抓取 | **Firecrawl** | 将网页转为结构化 Markdown，保留标题、正文、链接 |
 | 📎 本地解析 | **PyMuPDF (fitz)** | 解析本地上传的 PDF 文件，提取全文文本 |
 | ✂️ 文本切片 | `app/rag/chunker.py` | 1200 字符块 + 200 字符重叠，保持语义连贯 |
@@ -537,8 +543,8 @@ cd frontend && npx tsc --noEmit
 | 能力 | 实现 | 说明 |
 |------|------|------|
 | 🔍 自动信息搜集 | Tavily Search API | 全网搜索最新行业资讯 |
-| 🖼️ 图片搜索 | DuckDuckGo Images | 免 API Key，产品概念图搜索，结果持久化到素材库 |
-| 🖼️ 图片素材库 | ImageGallery + search-images API | 搜索→缩略图网格→拖拽到画布 |
+| 🖼️ 图片搜索 | DuckDuckGo Images (ddgs v9.x) | 免 API Key，产品概念图搜索，结果持久化到素材库 |
+| 🖼️ 图片素材库 | ImageGallery + search-images API | 搜索→缩略图网格→拖拽到画布 + 上下文空状态 + 自动轮询 |
 | ✂️ 图片裁剪 | Konva clipFunc + Transformer | 四角缩放的裁剪区域，非破坏性编辑 |
 | 📋 幻灯片管理 | duplicateSlide / copySlide / pasteSlide | 复制/粘贴/新增/删除 幻灯片 + 键盘快捷键 |
 | 🕷️ 网页深度抓取 | Firecrawl | 网页转结构化 Markdown |

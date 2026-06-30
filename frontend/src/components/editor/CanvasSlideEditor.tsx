@@ -440,6 +440,8 @@ export function CanvasSlideEditor({
   const [clipRegion, setClipRegion] = useState({ x: 0, y: 0, width: 0, height: 0 })
   const clipRegionRef = useRef(clipRegion)
   clipRegionRef.current = clipRegion
+  // 🆕 图片在裁剪模式下的 contain-fit 渲染边界（drawX, drawY, drawW, drawH）
+  const [imageRenderBounds, setImageRenderBounds] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
 
   // ─── 从 Zustand 读取状态 ──────────────────────────────────
   // 使用 activeIndex prop 而非 s.activePage，避免切换幻灯片时的渲染延迟
@@ -720,13 +722,15 @@ export function CanvasSlideEditor({
         if (!imageUrl) return
 
         // 使用 Konva 原生 API 获取 stage 坐标系的精确指针位置
+        // 注意：stage.getPointerPosition() 返回 CSS 像素坐标，
+        // 当 canvas 缩放（scale < 1）时需除以 scale 转换为逻辑 (1280×720) 坐标
         const stage = stageRef.current
         if (!stage) return
         stage.setPointersPositions(e.nativeEvent as MouseEvent)
         const pos = stage.getPointerPosition()
         if (!pos) return
-        const dropX = pos.x
-        const dropY = pos.y
+        const dropX = pos.x / scale
+        const dropY = pos.y / scale
 
         // 以落点为中心放置图片（默认 280×158，16:9 近似）
         const imgW = 280
@@ -837,22 +841,52 @@ export function CanvasSlideEditor({
   )
 
   // 裁剪区域状态（在裁剪模式下使用）
-  // 进入裁剪模式时初始化裁剪区域
+  // 进入裁剪模式时初始化裁剪区域（坐标基于 bounding box 空间，保持向后兼容）
   useEffect(() => {
-    if (!clipModeElementId) return
-    const el = displayElements.find((e) => e.id === clipModeElementId)
-    if (!el || el.type !== 'image') return
-    // 如果有已有裁剪数据则恢复，否则默认居中 80% 区域
-    if (el.clipWidth && el.clipWidth > 0) {
-      setClipRegion({ x: el.clipX || 0, y: el.clipY || 0, width: el.clipWidth, height: el.clipHeight || el.height })
-    } else {
-      setClipRegion({
-        x: el.width * 0.1,
-        y: el.height * 0.1,
-        width: el.width * 0.8,
-        height: el.height * 0.8,
-      })
+    if (!clipModeElementId) {
+      setImageRenderBounds(null)
+      return
     }
+    const el = displayElements.find((e) => e.id === clipModeElementId)
+    if (!el || el.type !== 'image' || !el.src) return
+
+    // 加载图片以获取自然尺寸，计算 contain-fit 渲染区域（供暗色遮罩对齐用）
+    const img = new window.Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      const imgScale = Math.min(el.width / img.width, el.height / img.height)
+      const drawW = img.width * imgScale
+      const drawH = img.height * imgScale
+      const drawX = el.x + (el.width - drawW) / 2
+      const drawY = el.y + (el.height - drawH) / 2
+      setImageRenderBounds({ x: drawX, y: drawY, w: drawW, h: drawH })
+
+      // 裁剪坐标仍存储在 bounding-box 空间（clipFunc 中通过 offset 转换）
+      if (el.clipWidth && el.clipWidth > 0) {
+        setClipRegion({ x: el.clipX || 0, y: el.clipY || 0, width: el.clipWidth, height: el.clipHeight || el.height })
+      } else {
+        setClipRegion({
+          x: el.width * 0.1,
+          y: el.height * 0.1,
+          width: el.width * 0.8,
+          height: el.height * 0.8,
+        })
+      }
+    }
+    img.onerror = () => {
+      setImageRenderBounds({ x: el.x, y: el.y, w: el.width, h: el.height })
+      if (el.clipWidth && el.clipWidth > 0) {
+        setClipRegion({ x: el.clipX || 0, y: el.clipY || 0, width: el.clipWidth, height: el.clipHeight || el.height })
+      } else {
+        setClipRegion({
+          x: el.width * 0.1,
+          y: el.height * 0.1,
+          width: el.width * 0.8,
+          height: el.height * 0.8,
+        })
+      }
+    }
+    img.src = el.src
   }, [clipModeElementId, displayElements])
 
   // ─── 幻灯片操作 ──────────────────────────────────────────
@@ -1630,32 +1664,42 @@ export function CanvasSlideEditor({
                 })}
 
                 {/* 裁剪模式覆盖层 */}
-                {clipModeElementId && (() => {
+                {clipModeElementId && imageRenderBounds && (() => {
                   const clipEl = displayElements.find((e) => e.id === clipModeElementId)
                   if (!clipEl || clipEl.type !== 'image') return null
                   const cr = clipRegion
-                  const absX = clipEl.x + cr.x
-                  const absY = clipEl.y + cr.y
+                  const ib = imageRenderBounds
+                  // 🆕 暗色遮罩基于图片的 contain-fit 渲染区域 (ib)，
+                  // 与 bounding-box 空间的裁剪区域 (cr) 求交集，确保遮罩精确覆盖图片
+                  const clipLeft = clipEl.x + cr.x
+                  const clipRight = clipEl.x + cr.x + cr.width
+                  const clipTop = clipEl.y + cr.y
+                  const clipBottom = clipEl.y + cr.y + cr.height
+                  // 裁剪区域与图片渲染区域的交集
+                  const visLeft = Math.max(ib.x, clipLeft)
+                  const visRight = Math.min(ib.x + ib.w, clipRight)
+                  const visTop = Math.max(ib.y, clipTop)
+                  const visBottom = Math.min(ib.y + ib.h, clipBottom)
                   return (
                     <>
-                      {/* 暗色覆盖（四个区域） */}
-                      <Rect x={clipEl.x} y={clipEl.y} width={cr.x} height={clipEl.height} fill="rgba(0,0,0,0.35)" listening={false} />
-                      <Rect x={absX + cr.width} y={clipEl.y} width={clipEl.width - cr.x - cr.width} height={clipEl.height} fill="rgba(0,0,0,0.35)" listening={false} />
-                      <Rect x={absX} y={clipEl.y} width={cr.width} height={cr.y} fill="rgba(0,0,0,0.35)" listening={false} />
-                      <Rect x={absX} y={absY + cr.height} width={cr.width} height={clipEl.height - cr.y - cr.height} fill="rgba(0,0,0,0.35)" listening={false} />
+                      {/* 暗色覆盖（四个区域，与图片渲染区域求交集） */}
+                      <Rect x={ib.x} y={ib.y} width={Math.max(0, clipLeft - ib.x)} height={ib.h} fill="rgba(0,0,0,0.35)" listening={false} />
+                      <Rect x={clipRight} y={ib.y} width={Math.max(0, ib.x + ib.w - clipRight)} height={ib.h} fill="rgba(0,0,0,0.35)" listening={false} />
+                      <Rect x={visLeft} y={ib.y} width={Math.max(0, visRight - visLeft)} height={Math.max(0, clipTop - ib.y)} fill="rgba(0,0,0,0.35)" listening={false} />
+                      <Rect x={visLeft} y={clipBottom} width={Math.max(0, visRight - visLeft)} height={Math.max(0, ib.y + ib.h - clipBottom)} fill="rgba(0,0,0,0.35)" listening={false} />
                       {/* 裁剪区域虚线框 — 可拖拽移动 + 可拖动角点/边缩放 */}
                       <Rect
                         id="clip-region-rect"
                         name="clip-region-rect"
-                        x={absX} y={absY}
+                        x={clipLeft} y={clipTop}
                         width={cr.width} height={cr.height}
                         stroke="#6366f1"
                         strokeWidth={1.5}
                         dash={[6, 3]}
                         draggable
                         dragBoundFunc={(pos) => ({
-                          x: Math.max(clipEl.x, Math.min(clipEl.x + clipEl.width - cr.width, pos.x)),
-                          y: Math.max(clipEl.y, Math.min(clipEl.y + clipEl.height - cr.height, pos.y)),
+                          x: Math.max(ib.x, Math.min(ib.x + ib.w - cr.width, pos.x)),
+                          y: Math.max(ib.y, Math.min(ib.y + ib.h - cr.height, pos.y)),
                         })}
                         onDragEnd={(e) => {
                           setClipRegion((prev) => ({
@@ -1675,7 +1719,7 @@ export function CanvasSlideEditor({
                           const newH = Math.max(20, node.height() * scaleY)
                           const newX = node.x() - clipEl.x
                           const newY = node.y() - clipEl.y
-                          // 限制在图片范围内
+                          // 限制在 bounding box 范围内
                           setClipRegion({
                             x: Math.max(0, newX),
                             y: Math.max(0, newY),
@@ -1702,11 +1746,11 @@ export function CanvasSlideEditor({
                         boundBoxFunc={(_oldBox, newBox) => {
                           // 限制裁剪区域不能小于 20px
                           if (newBox.width < 20 || newBox.height < 20) return _oldBox
-                          // 不能超出图片边界
-                          const nX = Math.max(clipEl.x, newBox.x)
-                          const nY = Math.max(clipEl.y, newBox.y)
-                          const maxW = clipEl.x + clipEl.width - nX
-                          const maxH = clipEl.y + clipEl.height - nY
+                          // 不能超出图片渲染区域边界（ib）
+                          const nX = Math.max(ib.x, newBox.x)
+                          const nY = Math.max(ib.y, newBox.y)
+                          const maxW = ib.x + ib.w - nX
+                          const maxH = ib.y + ib.h - nY
                           return {
                             ...newBox,
                             x: nX,

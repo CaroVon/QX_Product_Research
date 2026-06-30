@@ -308,7 +308,7 @@ function buildSlideDecor(params: SlideDecorParams): CanvasElement[] {
     elements.push({
       id: genId(), type: 'image', name: 'decor',
       src: resolveImageUrl(logoUrl),
-      x: 24, y: 8,
+      x: 24, y: 6,
       width: 120, height: 60,
     })
   }

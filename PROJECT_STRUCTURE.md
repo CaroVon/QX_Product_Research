@@ -1,14 +1,15 @@
 # QX Product Research Agent — 项目脚本架构文档
 
-> **版本**: v0.7 | **更新**: 2026-06-26
+> **版本**: v0.7.1 | **更新**: 2026-06-30
 >
 > 本文档描述项目的完整脚本结构、每段脚本的核心代码片段及其在系统中的作用。
 >
 > **v0.7 新增**:
 > - **Canvas 幻灯片编辑器**: 拖拽图片到画布 + 图片裁剪模式 (clipFunc + Transformer 四角缩放) + 幻灯片复制/粘贴/新增/删除 + 键盘快捷键 (Ctrl+M/Shift+D/Shift+C/Shift+V/Shift+Del)
-> - **图片素材库**: ImageGallery 组件 (可折叠 + 搜索栏 + 强度选择器 + 拖拽缩略图到画布) + search-images/get-images/delete-image API
+> - **图片素材库**: ImageGallery 组件 (可折叠 + 搜索栏 + 强度选择器 + 拖拽缩略图到画布) + search-images/get-images/delete-image API + 🆕 v0.7.1 上下文空状态引导 (按项目状态显示不同提示) + DRAFTING 阶段 15s 自动轮询 + 手动刷新按钮
 > - **Zustand 状态扩展**: clipX/Y/Width/Height 裁剪字段 + clipModeElementId/setClipMode 裁剪模式 + copiedSlide/copySlide/pasteSlide 跨页剪贴板
 > - **ProjectImage 数据模型**: 图片搜索持久化 (project_id FK, query, image_url, search_depth)
+> - **🆕 v0.7.1**: ddgs 图片搜索库升级至 v9.14.x (import `from ddgs import DDGS`, API: `DDGS().images(query, ...)`) + ImageGallery 空状态上下文提示 + 搜索失败与无结果区分提示
 >
 > **v0.6 新增**: 
 > - **研究引擎**: 多模态绘图路由 `_write_image_section` + LLM 输出三阶段清理 `_clean_llm_output` + WritingTask Celery 基类 + Source Ranking 信息源分级权重 T0-T3 + Prompt 内容深度增强 (数据/事实密集度提升) + retriever_k 下限提升至 12 + 引用兜底 (LLM 不用引用时自动附加) + `max_tokens=4096`
@@ -981,16 +982,18 @@ def tavily_search(query: str, max_results: int = 5):
     return client.search(query=query, max_results=max_results)
 ```
 
-### 9.4 `app/search/image_search.py` — 图片搜索（DuckDuckGo，免 API Key）
+### 9.4 `app/search/image_search.py` — 图片搜索（DuckDuckGo，免 API Key / ddgs v9.x）
 
 ```python
+from ddgs import DDGS  # 🆕 v0.7.1: ddgs v9.14.x, API 参数变更
+
 def search_images(query: str, max_results: int = 3) -> list[dict]:
     """
     基于 DuckDuckGo 图片搜索，免 API Key。
     返回：[{"title": "...", "image": "https://...", "url": "..."}]
     """
     ddgs = DDGS()
-    results = ddgs.images(keywords=query, region="wt-wt",
+    results = ddgs.images(query, region="wt-wt",   # v9.x: query 为位置参数，不再用 keywords=
                           safesearch="moderate", max_results=max_results)
     return [{"title": r.get("title", ""), "image": r.get("image", ""),
              "url": r.get("url", "")} for r in results if r.get("image")]
@@ -1572,19 +1575,29 @@ function CanvasSlideEditor({ slides, activeIndex, onActiveIndexChange,
 **`InlineAIBubble.tsx`** — ⚠️ 已废弃（Tiptap BubbleMenu，不再使用）：
   悬浮 AI 改写在 Canvas 架构中由 AI 助手面板的"应用到画布"按钮替代。
 
-**🆕 v0.7 `ImageGallery.tsx`** — 图片搜索 + 素材库面板（约 330 行）：
+**🆕 v0.7.1 `ImageGallery.tsx`** — 图片搜索 + 素材库面板（约 420 行）：
 
 ```tsx
-export function ImageGallery({ projectId, className }: Props) {
+export function ImageGallery({ projectId, className, activePage, projectStatus, imagesPerPage }: Props) {
   // 可折叠面板（折叠状态持久化到 localStorage "imageGalleryCollapsed"）
+  //   🆕 v0.7.1: 标题栏改为 <div role="button"> 避免 button 嵌套 DOM 错误
   // 搜索栏：文本输入 + 搜索强度选择器（快速/标准/深度/极致 → search_depth 5/10/15/20）
   //   调用 projectsApi.searchImages(projectId, { query, search_depth })
+  //   🆕 v0.7.1: 搜索成功但无结果 → 黄色 hint "未找到相关图片"（5s 自动消失）
+  //   🆕 v0.7.1: HTTP 5xx → "搜索服务异常" / 网络不通 → "网络连接失败"
   //   新搜索结果前置合并到 images 状态（按 id 去重）
   // 横向滚动缩略图网格：120×68 缩略图 + 拖拽到画布 (draggable + onDragStart)
   //   dataTransfer 格式: application/json { imageUrl, title, query }
   //   加载失败时显示占位 Icon
   // 悬停删除按钮（projectsApi.deleteProjectImage）
   // 挂载时自动加载 projectsApi.getProjectImages()
+  // 🆕 v0.7.1: 上下文空状态 — 按 projectStatus 显示不同引导：
+  //   preparing/waiting 早期阶段 → "项目尚未开始AI撰写，图片将在撰写阶段自动搜索添加"
+  //   drafting 撰写中 → "AI 正在撰写报告并自动搜索相关图片，新图片将陆续出现"
+  //   completed + imagesPerPage=0 → "自动图片搜索已关闭"
+  //   completed + 无图片 → "未找到图片素材"
+  // 🆕 v0.7.1: DRAFTING 阶段 15s 自动轮询刷新
+  // 🆕 v0.7.1: 手动刷新按钮（标题栏 + 空状态区）
 }
 ```
 
