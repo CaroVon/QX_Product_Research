@@ -82,5 +82,8 @@ fix/
 # caveman
 .caveman/
 
+# claude
+.claude/
+
 # dev section loop checkpoint
 scripts/.dev_checkpoint.json
