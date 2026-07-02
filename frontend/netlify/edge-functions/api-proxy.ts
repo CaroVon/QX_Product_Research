@@ -20,11 +20,26 @@ export default async function handler(request: Request) {
   const target = new URL(backend)
   url.host = target.host
   url.protocol = target.protocol
-  // port 如果没显式指定（如 https 默认 443）则不加
   if (target.port) url.port = target.port
 
-  // 克隆请求（保留 method / headers / body），只改 URL
-  const proxyRequest = new Request(url, request)
+  // 重建 Headers：替换 Host 为目标后端，避免 Cloudflare Tunnel 因 Host 不匹配拒绝请求
+  const headers = new Headers(request.headers)
+  headers.set("Host", target.host)
 
-  return fetch(proxyRequest)
+  const proxyRequest = new Request(url, {
+    method: request.method,
+    headers,
+    body: request.body,
+  })
+
+  try {
+    return await fetch(proxyRequest)
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        detail: `Proxy error: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    )
+  }
 }
