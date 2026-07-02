@@ -555,7 +555,10 @@ def render_custom_html_to_pdf(raw_html: str, topic: str, output_pdf_path: str):
     .manual-pdf-page {{
         page-break-after: always;
         box-sizing: border-box;
-        height: 100%;
+        height: 180mm;
+        max-height: 180mm;
+        overflow: hidden;
+        position: relative;
     }}
 
     body {{

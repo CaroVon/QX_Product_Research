@@ -226,6 +226,7 @@ const RenderPlaceholder = ({
         fill="#94a3b8"
         align="center"
         verticalAlign="middle"
+        lineHeight={1.4}
       />
     </Group>
   )
@@ -323,6 +324,7 @@ const RenderTable = ({
                   padding={TBL_PAD} fontSize={TBL_FONT} fill={textFill}
                   fontStyle={isHeader ? 'bold' : 'normal'}
                   align="center" verticalAlign="middle"
+                  lineHeight={1.4}
                   onDblClick={() => onCellDblClick(rIdx, cIdx)}
                 />
               )}
@@ -607,7 +609,7 @@ export function CanvasSlideEditor({
                 if (el.fontWeight === 'bold') parts.push('bold')
                 if (el.fontStyle === 'italic') parts.push('italic')
                 const konvaFontStyle = parts.join(' ') || 'normal'
-                layer.add(new Konva.Text({ x: el.x, y: el.y, width: el.width, text: el.text || '', fill: el.fill || '#334155', fontSize: el.fontSize || 20, fontFamily: 'sans-serif', fontStyle: konvaFontStyle, textDecoration: el.textDecoration === 'underline' ? 'underline' : '', align: (el.align || 'left') as string }))
+                layer.add(new Konva.Text({ x: el.x, y: el.y, width: el.width, height: el.height, text: el.text || '', fill: el.fill || '#334155', fontSize: el.fontSize || 20, fontFamily: 'sans-serif', fontStyle: konvaFontStyle, textDecoration: el.textDecoration === 'underline' ? 'underline' : '', align: (el.align || 'left') as string, lineHeight: 1.4, wrap: 'word', ellipsis: true }))
                 break
               }
               case 'circle':
@@ -621,7 +623,7 @@ export function CanvasSlideEditor({
                 if (img) {
                   const imageNode = new Konva.Image({ x: el.x, y: el.y, width: el.width, height: el.height, image: img })
                   if (el.clipWidth && el.clipWidth > 0) {
-                    imageNode.clipFunc((ctx: any) => {
+                    (imageNode as any).clipFunc((ctx: any) => {
                       ctx.beginPath()
                       ctx.rect(el.clipX ?? 0, el.clipY ?? 0, el.clipWidth!, el.clipHeight ?? el.height)
                       ctx.closePath()
@@ -647,7 +649,7 @@ export function CanvasSlideEditor({
                       const cellFill = isHeader ? headerFill : r % 2 === 0 ? rowAltFill : '#ffffff'
                       const textFill = isHeader ? headerColor : '#334155'
                       group.add(new Konva.Rect({ x: c * cw, y: r * ch, width: cw, height: ch, stroke: borderColor, strokeWidth: 1, fill: cellFill }))
-                      group.add(new Konva.Text({ x: c * cw + 5, y: r * ch, width: cw - 10, height: ch, text: el.tableData[r][c] || '', fill: textFill, fontSize: 14, fontStyle: isHeader ? 'bold' : 'normal', align: 'center', verticalAlign: 'middle' }))
+                      group.add(new Konva.Text({ x: c * cw + 5, y: r * ch, width: cw - 10, height: ch, text: el.tableData[r][c] || '', fill: textFill, fontSize: 14, fontStyle: isHeader ? 'bold' : 'normal', align: 'center', verticalAlign: 'middle', lineHeight: 1.4 }))
                     }
                   layer.add(group)
                 }
@@ -1581,6 +1583,7 @@ export function CanvasSlideEditor({
                           name="element"
                           x={el.x} y={el.y}
                           width={el.width}
+                          height={el.height}
                           text={el.text || ''}
                           fontSize={el.fontSize || 20}
                           fontFamily="sans-serif"
@@ -1589,6 +1592,9 @@ export function CanvasSlideEditor({
                           textDecoration={el.textDecoration || 'none'}
                           fill={el.fill || '#000000'}
                           align={el.align || 'left'}
+                          lineHeight={1.4}
+                          wrap="word"
+                          ellipsis
                           {...interactionProps}
                           onDblClick={() => handleTextDblClick(el.id)}
                         />

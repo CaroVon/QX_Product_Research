@@ -14,7 +14,7 @@
  * ============================================================
  */
 
-import { marked } from 'marked'
+import { marked, Token, Tokens } from 'marked'
 import type { DocumentBlockResponse } from '@/types/api'
 import type { CanvasElement } from '@/store/useCanvasStore'
 
@@ -52,7 +52,7 @@ export interface ContentNode {
   type: string           // 'heading' | 'list_item' | 'paragraph' | 'table' | 'blockquote' | 'code'
   depth: number          // heading depth (2=h2, 3=h3, ...) 或 list nesting depth
   text: string           // plain text (stripMarkdown 之后)
-  token: marked.Token    // 原始 marked token（渲染时用）
+  token: Token    // 原始 marked token（渲染时用）
   children: ContentNode[]
   breakBefore?: boolean  // 分页标记：在此节点前强制分页
   parent?: ContentNode   // 父节点引用（单级向上分页用）
@@ -101,6 +101,7 @@ const CONTENT_WIDTH = 1140       // 正文内容宽度（1280 - 左侧边距60 -
 const BODY_FONT_SIZE = 18
 const HEADING_FONT_SIZE = 24
 const CITATION_FONT_SIZE = 12
+const MAX_CITATION_TEXT_HEIGHT = CANVAS_HEIGHT - FOOTER_HEIGHT - 4 - (CITATION_ZONE_Y + 6)
 const IMAGE_RENDER_WIDTH = 800
 const IMAGE_RENDER_HEIGHT = 450
 const BLOCKQUOTE_BAR_WIDTH = 4
@@ -131,19 +132,533 @@ function genId(): string {
  * 对 CJK 字符和拉丁/数字分别计算宽度，比之前的全中文假设
  * 更准确，减少对中英混排段落的过高估算和提前分页。
  */
+function isWideChar(ch: string): boolean {
+  return /[一-鿿㐀-䶿぀-ヿ㄰-㆏　-〿＀-￯]/u.test(ch)
+}
+
 function estimateTextHeight(text: string, fontSize: number, width: number): number {
-  let totalCharWidth = 0
-  for (const ch of text) {
-    if (/\s/.test(ch)) {
-      totalCharWidth += fontSize * 0.3
-    } else if (/[一-鿿　-〿＀-￯⺀-⻿㐀-䶿]/.test(ch)) {
-      totalCharWidth += fontSize * 0.95 // CJK 全角字符
-    } else {
-      totalCharWidth += fontSize * 0.55 // 拉丁/数字/标点半角
+  const safeWidth = Math.max(width * 0.97, fontSize)
+  const rawLines = text.split(/\r?\n/)
+  let totalLines = 0
+
+  for (const rawLine of rawLines) {
+    const line = rawLine || ' '
+    let totalCharWidth = 0
+    for (const ch of line) {
+      if (/\s/.test(ch)) {
+        totalCharWidth += fontSize * 0.32
+      } else if (isWideChar(ch)) {
+        totalCharWidth += fontSize * 1.0 // CJK / 全角字符
+      } else if (/[A-Z0-9]/.test(ch)) {
+        totalCharWidth += fontSize * 0.62
+      } else {
+        totalCharWidth += fontSize * 0.58 // 拉丁 / 数字 / 标点半角
+      }
+    }
+    totalLines += Math.max(Math.ceil(totalCharWidth / safeWidth), 1)
+  }
+
+  return Math.ceil(totalLines * (fontSize * 1.48) + 4)
+}
+
+function estimateCitationFooterHeight(
+  activeCitations: Set<string>,
+  citationsDict: Record<string, string>,
+): number {
+  if (activeCitations.size === 0) return 0
+
+  const citationText = buildCitationText(activeCitations, citationsDict)
+  if (!citationText) return 0
+
+  const textHeight = estimateTextHeight(citationText, CITATION_FONT_SIZE, CONTENT_WIDTH)
+  return Math.min(textHeight + 14, MAX_CITATION_TEXT_HEIGHT)
+}
+
+function estimateNodeCitations(node: ContentNode): Set<string> {
+  const citations = new Set<string>()
+  const visit = (current: ContentNode) => {
+    for (const c of scanCitations(current.text)) citations.add(c)
+    for (const child of current.children) visit(child)
+  }
+  visit(node)
+  return citations
+}
+
+function mergeCitationSets(...sets: Array<Set<string>>): Set<string> {
+  const merged = new Set<string>()
+  for (const set of sets) {
+    for (const item of set) merged.add(item)
+  }
+  return merged
+}
+
+function getCurrentPageCapacity(
+  state: SlideBuildState,
+  citationsDict: Record<string, string>,
+  pendingCitations?: Set<string>,
+): number {
+  const reservedCitationHeight = estimateCitationFooterHeight(
+    mergeCitationSets(state.activeCitations, pendingCitations || new Set<string>()),
+    citationsDict,
+  )
+  const bodyBottom = reservedCitationHeight > 0
+    ? Math.min(CONTENT_END_Y, CITATION_ZONE_Y - reservedCitationHeight - 8)
+    : CONTENT_END_Y
+  return bodyBottom - state.currentY
+}
+
+function getPageCapacityLimit(
+  citationsDict: Record<string, string>,
+  pendingCitations?: Set<string>,
+): number {
+  const reservedCitationHeight = estimateCitationFooterHeight(
+    pendingCitations || new Set<string>(),
+    citationsDict,
+  )
+  const bodyBottom = reservedCitationHeight > 0
+    ? Math.min(CONTENT_END_Y, CITATION_ZONE_Y - reservedCitationHeight - 8)
+    : CONTENT_END_Y
+  return bodyBottom - CONTENT_START_Y
+}
+
+function isArrangeableLeaf(node: ContentNode): boolean {
+  return node.type === 'list_item' && node.text.trim().length > 0 && node.children.every((child) => child.type !== 'list_item')
+}
+
+function isArrangeableGroup(node: ContentNode): boolean {
+  const listChildren = node.children.filter((child) => child.type === 'list_item' && child.text.trim())
+  if (listChildren.length < 2) return false
+  return listChildren.every((child) => isArrangeableLeaf(child))
+}
+
+function looksLikeTimeline(text: string): boolean {
+  return /(Q[1-4]|\b20\d{2}\b|阶段|里程碑|时间线|step\s*\d+|第[一二三四五六七八九十]阶段)/i.test(text)
+}
+
+function looksLikeKeyValue(text: string): boolean {
+  return /[:：]/.test(text)
+}
+
+function looksLikeComparisonTitle(text: string): boolean {
+  return /(对比|比较|方案|选型|路径|版本|档位|组合|矩阵)/.test(text)
+}
+
+function estimateArrangementHeight(node: ContentNode, arrangement: ArrangementFormat): number {
+  const items = node.children.filter((child) => child.type === 'list_item' && child.text.trim())
+  const labelHeight = node.text.trim()
+    ? estimateTextHeight(node.text, BODY_FONT_SIZE, CONTENT_WIDTH) + 12
+    : 0
+
+  if (items.length === 0) return estimateVerticalNodeHeight(node)
+
+  switch (arrangement) {
+    case 'card_grid': {
+      const cols = items.length <= 3 ? 1 : items.length <= 6 ? 2 : 3
+      const cardWidth = Math.floor((CONTENT_WIDTH - CARD_GAP * (cols - 1)) / cols)
+      const cardHeights = items.map((item) => Math.max(
+        estimateTextHeight(item.text, BODY_FONT_SIZE, cardWidth - CARD_PADDING_X * 2) + CARD_PADDING_Y * 2 + 8,
+        CARD_MIN_HEIGHT,
+      ))
+      let total = 0
+      for (let row = 0; row < Math.ceil(items.length / cols); row++) {
+        const rowHeights = cardHeights.slice(row * cols, row * cols + cols)
+        total += Math.max(...rowHeights, CARD_MIN_HEIGHT)
+      }
+      total += Math.max(Math.ceil(items.length / cols) - 1, 0) * CARD_GAP
+      return labelHeight + total + 8
+    }
+    case 'comparison_cols': {
+      const nCols = Math.min(items.length, 3)
+      const colW = Math.floor((CONTENT_WIDTH - (nCols - 1) * 12) / nCols)
+      const maxColH = Math.max(...items.slice(0, nCols).map((item) => estimateTextHeight(item.text, BODY_FONT_SIZE, colW - 16) + 40))
+      return labelHeight + Math.max(maxColH, 100) + 12
+    }
+    case 'timeline': {
+      let total = 0
+      for (const item of items) {
+        const textH = estimateTextHeight(item.text, BODY_FONT_SIZE, CONTENT_WIDTH - TIMELINE_LINE_X_OFFSET - 30)
+        total += Math.max(textH + 12, 40)
+      }
+      return labelHeight + total + 16
+    }
+    case 'horizontal_flow': {
+      const lineHeight = BODY_FONT_SIZE * 1.35 + 6
+      let rows = 1
+      let rowWidth = 0
+      for (let i = 0; i < items.length; i++) {
+        const suffix = i < items.length - 1 ? '•' : ''
+        const tokenWidth = estimateTextWidth(items[i].text + suffix, BODY_FONT_SIZE) + 12
+        if (rowWidth > 0 && rowWidth + tokenWidth > CONTENT_WIDTH) {
+          rows += 1
+          rowWidth = 0
+        }
+        rowWidth += tokenWidth
+      }
+      return labelHeight + rows * lineHeight + 12
+    }
+    case 'tag_flow': {
+      let rows = 1
+      let rowWidth = 0
+      for (const item of items) {
+        const tagW = estimateTextWidth(item.text, TAG_FONT_SIZE) + TAG_PADDING_X * 2
+        const fullW = tagW + 8
+        if (rowWidth > 0 && rowWidth + fullW > CONTENT_WIDTH) {
+          rows += 1
+          rowWidth = 0
+        }
+        rowWidth += fullW
+      }
+      return labelHeight + rows * (TAG_FONT_SIZE * 1.35 + TAG_PADDING_Y * 2 + 6) + 6
+    }
+    case 'table_compact': {
+      const hasKv = items.some((item) => looksLikeKeyValue(item.text))
+      const rowH = 32
+      const rows = items.length + 1
+      return labelHeight + rows * rowH + 16 + (hasKv ? 0 : 0)
+    }
+    case 'numbered_circles':
+    case 'checklist':
+    case 'callout_boxes':
+    case 'connected_lines':
+    case 'bracket':
+      return estimateVerticalNodeHeight(node) + (ARRANGEMENT_OVERHEAD[arrangement] || 0)
+    default:
+      return estimateVerticalNodeHeight(node)
+  }
+}
+
+function pickArrangementCandidates(node: ContentNode): ArrangementFormat[] {
+  const items = node.children.filter((child) => child.type === 'list_item' && child.text.trim())
+  const itemTexts = items.map((item) => item.text.trim())
+  const itemCount = itemTexts.length
+  const avgLen = itemCount
+    ? itemTexts.reduce((sum, text) => sum + text.length, 0) / itemCount
+    : node.text.trim().length
+
+  if (itemTexts.some((text) => looksLikeTimeline(text))) {
+    return ['timeline', 'numbered_circles', 'connected_lines']
+  }
+  if (itemTexts.some((text) => looksLikeKeyValue(text))) {
+    return itemCount <= 3
+      ? ['comparison_cols', 'table_compact', 'callout_boxes']
+      : ['table_compact', 'card_grid', 'callout_boxes']
+  }
+  if (looksLikeComparisonTitle(node.text) || itemCount === 2) {
+    return ['comparison_cols', 'card_grid', 'horizontal_flow']
+  }
+  if (itemCount >= 6 && avgLen <= 28) {
+    return ['tag_flow', 'checklist', 'numbered_circles']
+  }
+  if (avgLen <= 24) {
+    return ['card_grid', 'tag_flow', 'horizontal_flow', 'numbered_circles']
+  }
+  if (avgLen <= 72) {
+    return ['card_grid', 'callout_boxes', 'checklist', 'connected_lines']
+  }
+  return ['callout_boxes', 'checklist', 'bracket', 'vertical']
+}
+
+function getArrangementWidth(arrangement: ArrangementFormat, node: ContentNode): number {
+  if (arrangement === 'card_grid') {
+    const items = node.children.filter((child) => child.type === 'list_item' && child.text.trim())
+    const cols = items.length <= 3 ? 1 : items.length <= 6 ? 2 : 3
+    return Math.floor((CONTENT_WIDTH - CARD_GAP * (cols - 1)) / cols) - CARD_PADDING_X * 2
+  }
+  if (arrangement === 'comparison_cols') {
+    const items = node.children.filter((child) => child.type === 'list_item' && child.text.trim())
+    const nCols = Math.min(items.length, 3)
+    return Math.floor((CONTENT_WIDTH - (nCols - 1) * 12) / nCols) - 16
+  }
+  if (arrangement === 'timeline') return CONTENT_WIDTH - TIMELINE_LINE_X_OFFSET - 30
+  if (arrangement === 'tag_flow') return CONTENT_WIDTH
+  if (arrangement === 'horizontal_flow') return CONTENT_WIDTH
+  return CONTENT_WIDTH - 20
+}
+
+function getPrimaryBodyWidth(node: ContentNode): number {
+  if (node.type === 'list_item' && node.text.trim()) return CONTENT_WIDTH - 20
+  if (node.type === 'heading') return CONTENT_WIDTH
+  if (node.type === 'paragraph') return CONTENT_WIDTH
+  if (node.type === 'blockquote') return CONTENT_WIDTH - 20
+  return CONTENT_WIDTH
+}
+
+function getNodeOwnHeight(node: ContentNode, arrangement?: ArrangementFormat): number {
+  if (node.type === 'heading') {
+    const headingFontSize = node.depth <= 2 ? 24 : node.depth === 3 ? 20 : 18
+    return estimateTextHeight(node.text, headingFontSize, CONTENT_WIDTH) +
+      (node.depth <= 2 ? 16 : node.depth === 3 ? 12 : 10)
+  }
+  if (node.type === 'list_item') {
+    if (!node.text.trim()) return 0
+    const width = arrangement ? getArrangementWidth(arrangement, node) : CONTENT_WIDTH - 20
+    return estimateTextHeight(node.text, BODY_FONT_SIZE, width) + 8
+  }
+  if (node.type === 'paragraph') return estimateTextHeight(node.text, BODY_FONT_SIZE, CONTENT_WIDTH) + 12
+  return estimateTokenHeight(node.token)
+}
+
+function getRequiredHeightForNode(node: ContentNode): number {
+  if (node.type === 'list_item' && isArrangeableGroup(node)) {
+    const arrangement = getNodeArrangement(node, hashString(node.text || node.token.raw || node.type))
+    return estimateArrangementHeight(node, arrangement)
+  }
+  return estimateNodeHeight(node)
+}
+
+function ensureNodeFitsPage(
+  node: ContentNode,
+  state: SlideBuildState,
+  citationsDict: Record<string, string>,
+  flushCurrentPage: () => void,
+): void {
+  if (state.currentY <= CONTENT_START_Y) return
+  const pendingCitations = estimateNodeCitations(node)
+  const requiredHeight = getRequiredHeightForNode(node)
+  if (requiredHeight <= getCurrentPageCapacity(state, citationsDict, pendingCitations)) return
+  flushCurrentPage()
+}
+
+function updateNodePageBreaks(
+  node: ContentNode,
+  state: SlideBuildState,
+  citationsDict: Record<string, string>,
+): void {
+  if (!isArrangeableGroup(node) || state.currentY <= CONTENT_START_Y) return
+  const nodeH = getRequiredHeightForNode(node)
+  const pendingCitations = estimateNodeCitations(node)
+  const remainingSpace = getCurrentPageCapacity(state, citationsDict, pendingCitations)
+  if (nodeH > remainingSpace && node.parent && !node.parent.breakBefore) {
+    node.parent.breakBefore = true
+  }
+}
+
+function getNodeArrangement(node: ContentNode, parentSeed: number): ArrangementFormat {
+  return pickArrangement(node, parentSeed)
+}
+
+function pickArrangement(node: ContentNode, parentSeed: number): ArrangementFormat {
+  const candidates = pickArrangementCandidates(node)
+  const rng = mulberry32(hashString(node.text || node.token.raw || node.type) + parentSeed)
+  const idx = Math.floor(rng() * candidates.length)
+  return candidates[idx]
+}
+
+function isVerticalTextArrangement(arrangement: ArrangementFormat): boolean {
+  return arrangement === 'vertical' || arrangement === 'callout_boxes' || arrangement === 'checklist' || arrangement === 'numbered_circles'
+}
+
+function shouldFallbackArrangement(
+  node: ContentNode,
+  arrangement: ArrangementFormat,
+  currentY: number,
+): boolean {
+  if (arrangement === 'vertical') return false
+  const estimated = estimateArrangementHeight(node, arrangement)
+  return currentY + estimated > CONTENT_END_Y && estimated > CONTENT_END_Y - CONTENT_START_Y
+}
+
+function getNodeVisualStyle(node: ContentNode): { fill: string; fontWeight?: string; fontSize?: number } {
+  if (node.type === 'heading') {
+    return {
+      fill: node.depth <= 2 ? BRAND.heading : BRAND.body,
+      fontWeight: node.depth <= 3 ? 'bold' : '500',
+      fontSize: node.depth <= 2 ? 24 : node.depth === 3 ? 20 : 18,
     }
   }
-  const lines = Math.max(Math.ceil(totalCharWidth / width), 1)
-  return lines * (fontSize * 1.35)
+  if (node.type === 'list_item') {
+    return {
+      fill: node.depth <= 3 ? BRAND.heading : BRAND.body,
+      fontWeight: node.depth <= 3 ? 'bold' : undefined,
+      fontSize: node.depth <= 3 ? BODY_FONT_SIZE : BODY_FONT_SIZE,
+    }
+  }
+  return { fill: BRAND.body }
+}
+
+function renderNodeTextBlock(
+  node: ContentNode,
+  state: SlideBuildState,
+  width: number,
+  options?: { x?: number; fontSize?: number; fontWeight?: string; fill?: string; marginBottom?: number },
+): number {
+  if (!node.text.trim()) return 0
+  const style = getNodeVisualStyle(node)
+  const fontSize = options?.fontSize || style.fontSize || BODY_FONT_SIZE
+  const h = estimateTextHeight(node.text, fontSize, width)
+  state.elements.push({
+    id: genId(),
+    type: 'text',
+    x: options?.x ?? CONTENT_X,
+    y: state.currentY,
+    width,
+    height: h + 4,
+    text: node.text,
+    fontSize,
+    fontWeight: options?.fontWeight || style.fontWeight,
+    fill: options?.fill || style.fill,
+  })
+  const advance = h + (options?.marginBottom ?? 8)
+  state.currentY += advance
+  return advance
+}
+
+function renderStructuredNode(
+  node: ContentNode,
+  state: SlideBuildState,
+  parentSeed: number,
+  options?: {
+    ensureSpace?: (requiredHeight: number) => void
+  },
+): void {
+  for (const c of scanCitations(node.text)) state.activeCitations.add(c)
+
+  if (node.type === 'heading') {
+    const headingStyle = getNodeVisualStyle(node)
+    const totalH = getNodeOwnHeight(node)
+    options?.ensureSpace?.(totalH)
+    state.elements.push({
+      id: genId(),
+      type: 'text',
+      x: CONTENT_X, y: state.currentY,
+      width: CONTENT_WIDTH, height: totalH,
+      text: node.text,
+      fontSize: headingStyle.fontSize || BODY_FONT_SIZE,
+      fontWeight: headingStyle.fontWeight,
+      fill: headingStyle.fill,
+    })
+    state.currentY += totalH
+    renderTreeWalk(node.children, state, parentSeed + hashString(node.text), options)
+    return
+  }
+
+  if (node.type === 'list_item' && isArrangeableGroup(node)) {
+    const pickedArrangement = getNodeArrangement(node, parentSeed)
+    const arrangement = shouldFallbackArrangement(node, pickedArrangement, state.currentY)
+      ? 'vertical'
+      : pickedArrangement
+    options?.ensureSpace?.(estimateArrangementHeight(node, arrangement))
+    const ctx: ArrangementContext = {
+      contentX: CONTENT_X,
+      availableWidth: CONTENT_WIDTH,
+      isLeafGroup: true,
+      seedValue: parentSeed + hashString(node.text),
+    }
+    ARRANGEMENT_RENDERERS[arrangement](node, state, ctx)
+    return
+  }
+
+  if (node.type === 'list_item') {
+    if (node.children.length > 0) {
+      if (node.text.trim()) {
+        const required = getNodeOwnHeight(node)
+        options?.ensureSpace?.(required)
+        const accentColor = node.depth <= 3 ? BRAND.primary : BRAND.divider
+        const boxFill = node.depth <= 3 ? '#f8fbff' : '#ffffff'
+        const textX = CONTENT_X + (node.depth - 2) * 18
+        const textW = CONTENT_WIDTH - (node.depth - 2) * 18 - 24
+        const h = estimateTextHeight(node.text, BODY_FONT_SIZE, textW - 22)
+        const blockH = h + 14
+        state.elements.push({
+          id: genId(),
+          type: 'rect',
+          x: textX,
+          y: state.currentY,
+          width: textW,
+          height: blockH,
+          fill: boxFill,
+          stroke: BRAND.divider,
+          strokeWidth: node.depth <= 3 ? 1 : 0.5,
+          radius: 6,
+          name: node.depth <= 3 ? 'arrangement-decor' : undefined,
+        } as CanvasElement)
+        state.elements.push({
+          id: genId(),
+          type: 'rect',
+          x: textX,
+          y: state.currentY,
+          width: 4,
+          height: blockH,
+          fill: accentColor,
+          radius: 4,
+          name: 'arrangement-decor',
+        })
+        state.elements.push({
+          id: genId(),
+          type: 'text',
+          x: textX + 16,
+          y: state.currentY + 6,
+          width: textW - 22,
+          height: h + 4,
+          text: node.text,
+          fontSize: BODY_FONT_SIZE,
+          fontWeight: node.depth <= 3 ? 'bold' : undefined,
+          fill: BRAND.body,
+        })
+        state.currentY += blockH + 10
+      }
+      renderTreeWalk(node.children, state, parentSeed + hashString(node.text), options)
+      return
+    }
+
+    if (node.text.trim()) {
+      options?.ensureSpace?.(getNodeOwnHeight(node))
+      renderBulletItem(node.text, state, node.depth - 2)
+    }
+    return
+  }
+
+  options?.ensureSpace?.(estimateTokenHeight(node.token))
+  processToken(node.token, state)
+}
+
+function renderSectionCallout(
+  text: string,
+  state: SlideBuildState,
+  options?: { ensureSpace?: (requiredHeight: number) => void },
+): void {
+  const plain = stripMarkdown(text)
+  if (!plain.trim()) return
+  const h = estimateTextHeight(plain, BODY_FONT_SIZE, CONTENT_WIDTH - BLOCKQUOTE_BAR_WIDTH - 24)
+  const blockH = h + 18
+  options?.ensureSpace?.(blockH + 8)
+  state.elements.push({
+    id: genId(), type: 'rect',
+    x: CONTENT_X, y: state.currentY,
+    width: CONTENT_WIDTH, height: blockH,
+    fill: '#f8fafc',
+    stroke: BRAND.divider,
+    strokeWidth: 0.5,
+    radius: 6,
+  } as CanvasElement)
+  state.elements.push({
+    id: genId(), type: 'rect',
+    x: CONTENT_X, y: state.currentY,
+    width: BLOCKQUOTE_BAR_WIDTH, height: blockH,
+    fill: BRAND.primary,
+    radius: 4,
+  })
+  state.elements.push({
+    id: genId(), type: 'text',
+    x: CONTENT_X + BLOCKQUOTE_BAR_WIDTH + 12, y: state.currentY + 8,
+    width: CONTENT_WIDTH - BLOCKQUOTE_BAR_WIDTH - 24, height: h + 4,
+    text: plain,
+    fontSize: BODY_FONT_SIZE,
+    fontStyle: 'italic',
+    fill: '#475569',
+  })
+  for (const c of scanCitations(text)) state.activeCitations.add(c)
+  state.currentY += blockH + 12
+}
+
+function extractExecutiveSummary(tokens: Token[]): { summary?: Tokens.Blockquote; remaining: Token[] } {
+  const remaining = [...tokens]
+  const first = remaining[0]
+  if (first?.type === 'blockquote') {
+    remaining.shift()
+    return { summary: first as Tokens.Blockquote, remaining }
+  }
+  return { remaining }
 }
 
 /**
@@ -636,7 +1151,7 @@ function hashString(str: string): number {
 }
 
 /** 从 token 中提取纯文本 */
-function extractTokenText(token: marked.Token): string {
+function extractTokenText(token: Token): string {
   if ('text' in token) {
     const t = token as { text: string }
     return stripMarkdown(t.text || '')
@@ -650,39 +1165,36 @@ function extractTokenText(token: marked.Token): string {
  * 将扁平结构转为深度正确的 ContentNode 树。
  */
 function buildListItemNode(
-  item: marked.Tokens.ListItem,
+  item: Tokens.ListItem,
   depth: number,
 ): ContentNode {
   const children: ContentNode[] = []
+  const inlineTextParts: string[] = []
 
   for (const childToken of item.tokens || []) {
     if (childToken.type === 'list') {
       // 嵌套列表 → 递归构建子节点（depth + 1）
-      const nestedList = childToken as marked.Tokens.List
+      const nestedList = childToken as Tokens.List
       for (const nestedItem of nestedList.items) {
         const nestedNode = buildListItemNode(nestedItem, depth + 1)
         children.push(nestedNode)
       }
     } else if (childToken.type === 'text' || childToken.type === 'paragraph') {
-      // 列表项内的内联文本/段落
-      const t = extractTokenText(childToken)
-      if (t.trim()) {
-        children.push({
-          type: 'paragraph',
-          depth: depth + 1,
-          text: t,
-          token: childToken,
-          children: [],
-        })
+      // 仅提取本层内联文本；不再转成 paragraph child，避免同层内容重复渲染
+      const t = extractTokenText(childToken).trim()
+      if (t) {
+        inlineTextParts.push(t)
       }
     }
   }
 
+  const inlineText = inlineTextParts.join(' ').trim()
+
   return {
     type: 'list_item',
     depth,
-    text: stripMarkdown(item.text || ''),
-    token: item as unknown as marked.Token,
+    text: inlineText || stripMarkdown(item.text || ''),
+    token: item as unknown as Token,
     children,
   }
 }
@@ -700,13 +1212,13 @@ function buildListItemNode(
  * 每个 list item 的 children 数组包含其嵌套子项。
  * 每个 heading 节点的 children 包含其下的所有内容。
  */
-function buildHierarchyTree(tokens: marked.Token[]): ContentNode[] {
+function buildHierarchyTree(tokens: Token[]): ContentNode[] {
   const roots: ContentNode[] = []
   const stack: ContentNode[] = [] // 当前嵌套路径（heading 层级栈）
 
   for (const token of tokens) {
     if (token.type === 'heading') {
-      const hToken = token as marked.Tokens.Heading
+      const hToken = token as Tokens.Heading
       const node: ContentNode = {
         type: 'heading',
         depth: hToken.depth,
@@ -731,7 +1243,7 @@ function buildHierarchyTree(tokens: marked.Token[]): ContentNode[] {
 
       stack.push(node)
     } else if (token.type === 'list') {
-      const listToken = token as marked.Tokens.List
+      const listToken = token as Tokens.List
       // 找到当前段落归属的父节点
       const currentParent = stack.length > 0 ? stack[stack.length - 1] : null
       const listDepth = currentParent ? currentParent.depth + 1 : 2
@@ -769,32 +1281,6 @@ function buildHierarchyTree(tokens: marked.Token[]): ContentNode[] {
   return roots
 }
 
-/**
- * 判断 ContentNode 是否为叶子层级（depth ≥ 5，即 Level 3+）。
- * 这些节点的子内容组会随机选择排列格式。
- */
-function isLeafLevel(node: ContentNode): boolean {
-  return node.depth >= 5
-}
-
-/**
- * 节点的排列格式选择。
- * 规则：Level 1-2 (depth ≤ 4) 始终 vertical；Level 3+ (depth ≥ 5) 随机选择。
- */
-const LEAF_ARRANGEMENTS: ArrangementFormat[] = [
-  'vertical', 'bracket', 'table_compact', 'horizontal_flow',
-  'card_grid', 'connected_lines', 'numbered_circles', 'tag_flow',
-  'callout_boxes', 'checklist', 'timeline', 'comparison_cols',
-]
-
-function pickArrangement(node: ContentNode, parentSeed: number): ArrangementFormat {
-  if (!isLeafLevel(node)) return 'vertical'
-  // 基于内容文本 + 父种子确定性选择
-  const rng = mulberry32(hashString(node.text) + parentSeed)
-  const idx = Math.floor(rng() * LEAF_ARRANGEMENTS.length)
-  return LEAF_ARRANGEMENTS[idx]
-}
-
 // ══════════════════════════════════════════════════════════════
 // 内部状态
 // ══════════════════════════════════════════════════════════════
@@ -805,6 +1291,54 @@ interface SlideBuildState {
   activeCitations: Set<string>
 }
 
+function clampContentY(currentY: number): number {
+  return Math.min(currentY, CONTENT_END_Y)
+}
+
+function estimateVerticalNodeHeight(node: ContentNode): number {
+  let h = 0
+  if (node.text.trim()) {
+    h += estimateTextHeight(node.text, BODY_FONT_SIZE, CONTENT_WIDTH - 20) + 8
+  }
+  for (const child of node.children) {
+    h += estimateNodeHeight(child)
+  }
+  return h + 4
+}
+
+function getArrangementEstimate(node: ContentNode, arrangement: ArrangementFormat): number {
+  if (arrangement === 'vertical') return estimateVerticalNodeHeight(node)
+  return estimateArrangementHeight(node, arrangement)
+}
+
+function toLinePoints(x1: number, y1: number, x2: number, y2: number): number[] {
+  return [x1, y1, x2, y2]
+}
+
+function buildLineElement(
+  groupId: string,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  stroke: string,
+  strokeWidth: number,
+): CanvasElement {
+  return {
+    id: genId(),
+    type: 'line',
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    points: toLinePoints(x1, y1, x2, y2),
+    stroke,
+    strokeWidth,
+    groupId,
+    name: 'arrangement-decor',
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // AST Token → CanvasElement 精确映射（v5 商业风格版）
 // ══════════════════════════════════════════════════════════════
@@ -813,16 +1347,16 @@ interface SlideBuildState {
  * 检查段落 token 中是否包含内嵌图片，如有则提取渲染。
  */
 function tryRenderParagraphImages(
-  token: marked.Tokens.Paragraph,
+  token: Tokens.Paragraph,
   state: SlideBuildState,
 ): boolean {
-  const inlineTokens = (token as any).tokens as marked.Token[] | undefined
+  const inlineTokens = (token as any).tokens as Token[] | undefined
   if (!inlineTokens || inlineTokens.length === 0) return false
 
   let hasImage = false
   for (const t of inlineTokens) {
     if (t.type === 'image') {
-      const imgToken = t as marked.Tokens.Image
+      const imgToken = t as Tokens.Image
       const href = imgToken.href
       const resolvedUrl = resolveImageUrl(href)
 
@@ -919,89 +1453,24 @@ function renderTreeWalk(
   nodes: ContentNode[],
   state: SlideBuildState,
   parentSeed: number,
+  options?: {
+    ensureSpace?: (requiredHeight: number) => void
+  },
 ): void {
   for (const node of nodes) {
-    const text = node.text
-
-    switch (node.type) {
-      case 'heading': {
-        // 🆕 v6 Phase 2: 按层级区分字号
-        //   depth 2 (##) → 24px bold (Level 0, 章节主标题)
-        //   depth 3 (###) → 20px bold (Level 1, 子主题)
-        //   depth 4+ (####) → 18px semibold (Level 2+, 细分维度)
-        const headingFontSize = node.depth <= 2 ? 24 : node.depth === 3 ? 20 : 18
-        const headingWeight = node.depth <= 3 ? 'bold' : '500'
-        for (const c of scanCitations(text)) state.activeCitations.add(c)
-        const h = estimateTextHeight(text, headingFontSize, CONTENT_WIDTH)
-        state.elements.push({
-          id: genId(),
-          type: 'text',
-          x: CONTENT_X, y: state.currentY,
-          width: CONTENT_WIDTH, height: h + (node.depth <= 2 ? 16 : node.depth === 3 ? 12 : 10),
-          text,
-          fontSize: headingFontSize,
-          fontWeight: headingWeight,
-          fill: node.depth <= 2 ? BRAND.heading : BRAND.body,
-        })
-        state.currentY += h + (node.depth <= 2 ? 16 : node.depth === 3 ? 12 : 10)
-        renderTreeWalk(node.children, state, parentSeed)
-        break
-      }
-
-      case 'list_item': {
-        // 扫描引用
-        for (const c of scanCitations(text)) state.activeCitations.add(c)
-
-        // 🆕 v6 Phase 3: 判断是否该用排列格式
-        // 若本节点的子节点是叶子层级 (depth ≥ 5)，则作为"组"整体渲染
-        const hasLeafChildren = node.children.length > 0 &&
-          node.children.some((c) => isLeafLevel(c))
-        const isLeafGroupParent = hasLeafChildren && !isLeafLevel(node)
-
-        if (isLeafGroupParent) {
-          // 叶子组父节点：选择排列格式并渲染整组
-          const arrangement = getNodeArrangement(node.children[0], parentSeed)
-          const ctx: ArrangementContext = {
-            contentX: CONTENT_X,
-            availableWidth: CONTENT_WIDTH,
-            isLeafGroup: true,
-            seedValue: parentSeed + hashString(node.text),
-          }
-          ARRANGEMENT_RENDERERS[arrangement](node, state, ctx)
-        } else if (node.children.length > 0) {
-          // 非叶子层级子节点 → 递归正常 vertical 渲染
-          if (text.trim()) {
-            renderBulletItem(text, state, node.depth - 2)
-          }
-          renderTreeWalk(node.children, state, parentSeed)
-        } else {
-          // 叶子节点无子项 → standalone bullet
-          if (text.trim()) {
-            renderBulletItem(text, state, node.depth - 2)
-          }
-        }
-        break
-      }
-
-      default: {
-        // 叶节点：paragraph, table, blockquote, code → 委托 processToken
-        for (const c of scanCitations(text)) state.activeCitations.add(c)
-        processToken(node.token, state)
-        break
-      }
-    }
+    renderStructuredNode(node, state, parentSeed, options)
   }
 }
 
 /** 原有的 processToken — 保留用于叶节点渲染 */
 function processToken(
-  token: marked.Token,
+  token: Token,
   state: SlideBuildState,
 ): void {
   switch (token.type) {
     // ── 标题 ──────────────────────────────────────────────
     case 'heading': {
-      const t = token as marked.Tokens.Heading
+      const t = token as Tokens.Heading
       const text = t.text
       for (const c of scanCitations(text)) state.activeCitations.add(c)
 
@@ -1022,7 +1491,7 @@ function processToken(
 
     // ── 段落（含图片捕获） ──────────────────────────────
     case 'paragraph': {
-      const t = token as marked.Tokens.Paragraph
+      const t = token as Tokens.Paragraph
 
       const hasImage = tryRenderParagraphImages(t, state)
       if (hasImage) {
@@ -1053,7 +1522,7 @@ function processToken(
 
     // ── 列表（品牌色圆点） ────────────────────────────────
     case 'list': {
-      const t = token as marked.Tokens.List
+      const t = token as Tokens.List
       let itemIndex = 0
       for (const item of t.items) {
         const rawText = item.text || ''
@@ -1107,7 +1576,7 @@ function processToken(
 
     // ── 表格 ──────────────────────────────────────────────
     case 'table': {
-      const t = token as marked.Tokens.Table
+      const t = token as Tokens.Table
       const header = t.header.map((cell) => cell.text.replace(/^"|"$/g, '').trim())
       const rows = t.rows.map((row) => row.map((cell) => cell.text.replace(/^"|"$/g, '').trim()))
       const data = [header, ...rows]
@@ -1138,7 +1607,7 @@ function processToken(
 
     // ── 引用块 ──────────────────────────────────────────────
     case 'blockquote': {
-      const t = token as marked.Tokens.Blockquote
+      const t = token as Tokens.Blockquote
       const text = t.text
       for (const c of scanCitations(text)) state.activeCitations.add(c)
 
@@ -1185,7 +1654,7 @@ function processToken(
 
     // ── 代码块 ────────────────────────────────────────────
     case 'code': {
-      const t = token as marked.Tokens.Code
+      const t = token as Tokens.Code
       const lines = t.text.split('\n').length
       state.currentY += lines * 18 + 12
       break
@@ -1235,11 +1704,6 @@ const ARRANGEMENT_OVERHEAD: Partial<Record<ArrangementFormat, number>> = {
 }
 
 // ── 通用辅助 ─────────────────────────────────────────────────
-
-/** 获取或生成节点的 arrangement 格式（确定性） */
-function getNodeArrangement(node: ContentNode, parentSeed: number): ArrangementFormat {
-  return pickArrangement(node, parentSeed)
-}
 
 /** 生成组 ID（同一组内所有元素共享） */
 function genGroupId(): string {
@@ -1345,12 +1809,17 @@ function renderArrangementBracket(
     { x1: braceX, y1: braceMid, x2: braceX + 8, y2: braceMid + 5 },
   ]
   for (const seg of braceSegments) {
-    state.elements.push({
-      id: genId(), type: 'line',
-      x: seg.x1, y: seg.y1, width: seg.x2, height: seg.y2,
-      stroke: BRAND.primary, strokeWidth: 2,
-      groupId, name: 'arrangement-decor',
-    } as CanvasElement)
+    state.elements.push(
+      buildLineElement(
+        groupId,
+        seg.x1,
+        seg.y1,
+        seg.x2,
+        seg.y2,
+        BRAND.primary,
+        2,
+      ),
+    )
   }
 
   // 渲染子项文本
@@ -1483,13 +1952,14 @@ function renderArrangementHorizontalFlow(
   state.currentY += BODY_FONT_SIZE * 1.35 + 12
 }
 
-/** 粗略估计文本宽度（CJK 0.95x, Latin 0.55x） */
+/** 粗略估计文本宽度（与 estimateTextHeight 使用同套字符宽度模型） */
 function estimateTextWidth(text: string, fontSize: number): number {
   let w = 0
   for (const ch of text) {
-    if (/\s/.test(ch)) w += fontSize * 0.3
-    else if (/[一-鿿]/.test(ch)) w += fontSize * 0.95
-    else w += fontSize * 0.55
+    if (/\s/.test(ch)) w += fontSize * 0.32
+    else if (isWideChar(ch)) w += fontSize * 1.0
+    else if (/[A-Z0-9]/.test(ch)) w += fontSize * 0.62
+    else w += fontSize * 0.58
   }
   return w
 }
@@ -1564,13 +2034,17 @@ function renderArrangementConnectedLines(
     const pos = positions[i]
 
     // 水平分支线
-    state.elements.push({
-      id: genId(), type: 'line',
-      x: treeX, y: pos.y + pos.textH / 2,
-      width: textX, height: pos.y + pos.textH / 2,
-      stroke: BRAND.muted, strokeWidth: 1,
-      groupId, name: 'arrangement-decor',
-    } as CanvasElement)
+    state.elements.push(
+      buildLineElement(
+        groupId,
+        treeX,
+        pos.y + pos.textH / 2,
+        textX,
+        pos.y + pos.textH / 2,
+        BRAND.muted,
+        1,
+      ),
+    )
 
     // 圆点
     state.elements.push({
@@ -1999,16 +2473,27 @@ function renderArrangementCardGrid(
 
   // Pass 1: 计算每个卡片的内容高度 + 整体 bounding box
   const cardHeights: number[] = []
-  let maxCardH = CARD_MIN_HEIGHT
   for (const item of items) {
     const textH = estimateTextHeight(item.text, BODY_FONT_SIZE, cardWidth - CARD_PADDING_X * 2)
     const cardH = Math.max(textH + CARD_PADDING_Y * 2 + 8, CARD_MIN_HEIGHT)
     cardHeights.push(cardH)
-    if (cardH > maxCardH) maxCardH = cardH
   }
 
+  const rowHeights: number[] = []
+  for (let row = 0; row < Math.ceil(items.length / cols); row++) {
+    let rowMaxH = CARD_MIN_HEIGHT
+    for (let col = 0; col < cols; col++) {
+      const idx = row * cols + col
+      if (idx >= items.length) break
+      rowMaxH = Math.max(rowMaxH, cardHeights[idx])
+    }
+    rowHeights.push(rowMaxH)
+  }
+
+  const totalGridHeight = rowHeights.reduce((sum, rowH) => sum + rowH, 0) +
+    Math.max(rowHeights.length - 1, 0) * CARD_GAP
+
   // 渲染父标签
-  const startY = state.currentY
   if (parent.text.trim()) {
     const labelH = estimateTextHeight(parent.text, BODY_FONT_SIZE, CONTENT_WIDTH)
     state.elements.push({
@@ -2026,21 +2511,18 @@ function renderArrangementCardGrid(
   const gridStartY = state.currentY
 
   // Pass 2: 渲染卡片（含装饰框 + 文本）
-  let itemIdx = 0
-  for (let row = 0; row < Math.ceil(items.length / cols); row++) {
+  let rowOffsetY = 0
+  for (let row = 0; row < rowHeights.length; row++) {
     const rowStartX = ctx.contentX
-    let rowMaxH = CARD_MIN_HEIGHT
+    const rowMaxH = rowHeights[row]
+    const rowStartIdx = row * cols
 
-    // 计算该行最大高度
-    for (let col = 0; col < cols && itemIdx < items.length; col++, itemIdx++) {
-      if (cardHeights[itemIdx] > rowMaxH) rowMaxH = cardHeights[itemIdx]
-    }
+    for (let col = 0; col < cols; col++) {
+      const itemIdx = rowStartIdx + col
+      if (itemIdx >= items.length) break
 
-    // 重置 itemIdx 渲染该行
-    itemIdx = row * cols
-    for (let col = 0; col < cols && itemIdx < items.length; col++, itemIdx++) {
       const cardX = rowStartX + col * (cardWidth + CARD_GAP)
-      const cardY = gridStartY + row * (rowMaxH + CARD_GAP)
+      const cardY = gridStartY + rowOffsetY
       const bgH = Math.max(cardHeights[itemIdx], rowMaxH)
 
       // 卡片背景
@@ -2066,13 +2548,10 @@ function renderArrangementCardGrid(
       } as CanvasElement)
     }
 
-    if (itemIdx >= items.length) {
-      state.currentY = gridStartY + (Math.ceil(items.length / cols)) * (maxCardH + CARD_GAP)
-      break
-    }
+    rowOffsetY += rowMaxH + CARD_GAP
   }
 
-  state.currentY += 8 // 组尾间距
+  state.currentY = gridStartY + totalGridHeight + 8 // 组尾间距
 }
 
 // ── 11. 时间轴排列 ─────────────────────────────────────────
@@ -2171,15 +2650,15 @@ function renderArrangementTimeline(
 // 高度预估（用于分页判断）
 // ══════════════════════════════════════════════════════════════
 
-function estimateTokenHeight(token: marked.Token): number {
+function estimateTokenHeight(token: Token): number {
   switch (token.type) {
     case 'heading': {
-      const t = token as marked.Tokens.Heading
+      const t = token as Tokens.Heading
       return estimateTextHeight(t.text, HEADING_FONT_SIZE, CONTENT_WIDTH) + 16
     }
     case 'paragraph': {
-      const t = token as marked.Tokens.Paragraph
-      const inlineTokens = (t as any).tokens as marked.Token[] | undefined
+      const t = token as Tokens.Paragraph
+      const inlineTokens = (t as any).tokens as Token[] | undefined
       if (inlineTokens) {
         let imgH = 0
         for (const it of inlineTokens) {
@@ -2192,7 +2671,7 @@ function estimateTokenHeight(token: marked.Token): number {
       return estimateTextHeight(stripMarkdown(t.text), BODY_FONT_SIZE, CONTENT_WIDTH) + 12
     }
     case 'list': {
-      const t = token as marked.Tokens.List
+      const t = token as Tokens.List
       let total = 0
       for (const item of t.items) {
         const raw = item.text || ''
@@ -2201,15 +2680,15 @@ function estimateTokenHeight(token: marked.Token): number {
       return total + 4
     }
     case 'table': {
-      const t = token as marked.Tokens.Table
+      const t = token as Tokens.Table
       return (t.rows.length + 1) * 36 + 16
     }
     case 'blockquote': {
-      const t = token as marked.Tokens.Blockquote
+      const t = token as Tokens.Blockquote
       return estimateTextHeight(stripMarkdown(t.text), BODY_FONT_SIZE, CONTENT_WIDTH - 20) + 16 + 12
     }
     case 'code': {
-      const t = token as marked.Tokens.Code
+      const t = token as Tokens.Code
       return t.text.split('\n').length * 18 + 12
     }
     case 'space':
@@ -2219,7 +2698,7 @@ function estimateTokenHeight(token: marked.Token): number {
   }
 }
 
-function hasSubstance(token: marked.Token): boolean {
+function hasSubstance(token: Token): boolean {
   return token.type !== 'space' && token.type !== 'hr'
 }
 
@@ -2238,20 +2717,15 @@ function appendCitationFooter(
   const citationText = buildCitationText(activeCitations, citationsDict)
   if (!citationText) return currentY
 
-  // 估算引用区高度
-  const citationLines = citationText.length / 80 + 1  // 粗略按 80 字符换行
-  const citationHeight = Math.min(Math.ceil(citationLines) * 16 + 8, 60)
+  const citationHeight = estimateCitationFooterHeight(activeCitations, citationsDict)
+  const safeCurrentY = clampContentY(currentY)
+  const maxSeparatorY = CANVAS_HEIGHT - FOOTER_HEIGHT - 4 - citationHeight
+  const separatorY = Math.min(Math.max(safeCurrentY + 8, CITATION_ZONE_Y), maxSeparatorY)
 
-  // 分隔线 Y = 钉到页底引用区（CITATION_ZONE_Y），即使内容稀疏也下沉到页底；
-  // 若内容已超出引用区起点，则紧随内容下方（不再上移覆盖正文）。
-  const separatorY = Math.max(currentY + 8, CITATION_ZONE_Y)
-
-  // 检测溢出：如果引用区会与页脚重叠，则不渲染（推到下一页）
-  if (separatorY + citationHeight > CANVAS_HEIGHT - FOOTER_HEIGHT - 4) {
-    return currentY // 返回未渲染引用的 Y，由分页逻辑处理
+  if (separatorY <= safeCurrentY) {
+    return currentY
   }
 
-  // 分隔线（整页内容宽，更像正式脚注线）
   elements.push({
     id: genId(), type: 'rect', name: 'decor',
     x: CONTENT_X, y: separatorY,
@@ -2259,7 +2733,6 @@ function appendCitationFooter(
     fill: BRAND.divider,
   })
 
-  // 引用文本
   elements.push({
     id: genId(), type: 'text',
     x: CONTENT_X, y: separatorY + 6,
@@ -2287,7 +2760,6 @@ function buildContentSlides(
 ): CanvasElement[][] {
   const slidesElements: CanvasElement[][] = []
 
-  // 1. AST 解析
   const rawTokens = marked.lexer(content)
   if (rawTokens.length === 0) {
     slidesElements.push([
@@ -2301,9 +2773,8 @@ function buildContentSlides(
     return slidesElements
   }
 
-  // 2. 过滤无用节点 + 剔除首个 heading（装饰器中已渲染章节标题）
   let firstHeadingRemoved = false
-  const tokens = rawTokens.filter((token) => {
+  const filteredTokens = rawTokens.filter((token) => {
     if (token.type === 'space') return false
     if (!firstHeadingRemoved && token.type === 'heading') {
       firstHeadingRemoved = true
@@ -2312,7 +2783,10 @@ function buildContentSlides(
     return true
   })
 
-  if (tokens.length === 0) {
+  const { summary, remaining } = extractExecutiveSummary(filteredTokens)
+  const tokens = remaining
+
+  if (tokens.length === 0 && !summary) {
     slidesElements.push([
       ...buildSlideDecor({
         sectionTitle,
@@ -2324,10 +2798,8 @@ function buildContentSlides(
     return slidesElements
   }
 
-  // 3. 🆕 v6: 构建层级树
   const tree = buildHierarchyTree(tokens)
 
-  // 4. 初始化第一页
   let currentPageNum = startPageNumber || 1
   let state: SlideBuildState = {
     elements: [
@@ -2342,7 +2814,6 @@ function buildContentSlides(
     activeCitations: new Set<string>(),
   }
 
-  // 章节首页预留图片占位框（右上角）
   if (withImagePlaceholder) {
     const phX = CANVAS_WIDTH - 80 - PLACEHOLDER_WIDTH
     state.elements.push({
@@ -2355,105 +2826,73 @@ function buildContentSlides(
     state.currentY = CONTENT_START_Y + PLACEHOLDER_HEIGHT + 16
   }
 
-  const PAGE_CAPACITY = CONTENT_END_Y - CONTENT_START_Y
+  const resetPage = () => {
+    currentPageNum++
+    state = {
+      elements: [
+        ...buildSlideDecor({
+          sectionTitle,
+          logoUrl,
+          pageNumber: currentPageNum,
+          totalPages,
+        }),
+      ],
+      currentY: CONTENT_START_Y,
+      activeCitations: new Set<string>(),
+    }
+  }
 
-  // 5. 🆕 v6 Phase 1: 树遍历 + 分页（沿用现有分页逻辑，后续 Phase 5 升级为智能分页）
-  //  使用 content 哈希作为确定性随机种子
+  const flushCurrentPage = () => {
+    appendCitationFooter(
+      state.elements,
+      state.activeCitations,
+      citationsDict,
+      clampContentY(state.currentY),
+    )
+    slidesElements.push(state.elements)
+    resetPage()
+  }
+
+  const ensureSpace = (requiredHeight: number) => {
+    if (state.currentY <= CONTENT_START_Y) return
+    if (requiredHeight <= getCurrentPageCapacity(state, citationsDict)) return
+    flushCurrentPage()
+  }
+
+  if (summary) {
+    renderSectionCallout(summary.text, state, { ensureSpace })
+  }
+
   const treeSeed = hashString(sectionTitle + content)
 
   function walkAndPaginate(nodes: ContentNode[]): void {
     for (const node of nodes) {
-      // 🆕 v6 Phase 5: 检查 breakBefore 标记（单级向上分页）
       if (node.breakBefore && state.currentY > CONTENT_START_Y) {
-        appendCitationFooter(
-          state.elements, state.activeCitations, citationsDict, state.currentY,
-        )
-        slidesElements.push(state.elements)
-        currentPageNum++
-        state = {
-          elements: [
-            ...buildSlideDecor({
-              sectionTitle, logoUrl,
-              pageNumber: currentPageNum, totalPages,
-            }),
-          ],
-          currentY: CONTENT_START_Y,
-          activeCitations: new Set<string>(),
-        }
+        flushCurrentPage()
       }
 
-      // 估算本节点及其所有子节点的高度
-      const nodeH = estimateNodeHeight(node)
+      updateNodePageBreaks(node, state, citationsDict)
+      ensureNodeFitsPage(node, state, citationsDict, flushCurrentPage)
 
-      // 🆕 v6 Phase 5: 智能分页 — 叶级组不会被断开
-      // 若 node 是 list_item 且其子节点在叶级（depth ≥ 5），
-      // 且整组高度超出当前页剩余空间，则向上标记父节点 breakBefore
-      const isLeafGroupParent =
+      const pageCapacity = getPageCapacityLimit(citationsDict, estimateNodeCitations(node))
+      const nodeH = getRequiredHeightForNode(node)
+      const useOversizedVerticalFallback =
         node.type === 'list_item' &&
-        node.children.length > 0 &&
-        node.children.some((c) => isLeafLevel(c)) &&
-        !isLeafLevel(node)
+        isArrangeableGroup(node) &&
+        nodeH > pageCapacity
 
-      const remainingSpace = CONTENT_END_Y - state.currentY
-      const wouldSplitLeafGroup =
-        isLeafGroupParent &&
-        state.currentY > CONTENT_START_Y &&
-        nodeH > remainingSpace
-
-      if (wouldSplitLeafGroup && node.parent && !node.parent.breakBefore) {
-        // 单级向上：在父级前分页（仅执行一次，breakBefore 标志防止死循环）
-        node.parent.breakBefore = true
-        // 结束当前页并跳过本节点（下一页重新处理）
-        appendCitationFooter(
-          state.elements, state.activeCitations, citationsDict, state.currentY,
-        )
-        slidesElements.push(state.elements)
-        currentPageNum++
-        state = {
-          elements: [
-            ...buildSlideDecor({
-              sectionTitle, logoUrl,
-              pageNumber: currentPageNum, totalPages,
-            }),
-          ],
-          currentY: CONTENT_START_Y,
-          activeCitations: new Set<string>(),
-        }
-        // 跳过本节点渲染，让新页在下一轮 for 中处理（breakBefore 已设）
-        continue
-      }
-
-      // 翻页条件（沿用现有逻辑 + 叶组保护）
-      const isOversized = nodeH > PAGE_CAPACITY
-      const needBreakForOversized = isOversized && state.currentY > CONTENT_START_Y
-
-      if (
-        nodeHasSubstance(node) &&
-        state.currentY > CONTENT_START_Y &&
-        (needBreakForOversized ||
-          (!isOversized && state.currentY + nodeH > CONTENT_END_Y))
-      ) {
-        appendCitationFooter(
-          state.elements, state.activeCitations, citationsDict, state.currentY,
-        )
-        slidesElements.push(state.elements)
-        currentPageNum++
-        state = {
-          elements: [
-            ...buildSlideDecor({
-              sectionTitle, logoUrl,
-              pageNumber: currentPageNum, totalPages,
-            }),
-          ],
-          currentY: CONTENT_START_Y,
-          activeCitations: new Set<string>(),
-        }
-      }
-
-      // 渲染节点
-      if (node.type === 'heading' || node.type === 'list_item') {
-        renderTreeWalk([node], state, treeSeed)
+      if (useOversizedVerticalFallback) {
+        ensureSpace(estimateVerticalNodeHeight(node))
+        renderArrangementVertical(node, state, {
+          contentX: CONTENT_X,
+          availableWidth: CONTENT_WIDTH,
+          isLeafGroup: false,
+          seedValue: treeSeed,
+        })
+      } else if (node.type === 'heading' || node.type === 'list_item') {
+        renderTreeWalk([node], state, treeSeed, { ensureSpace })
       } else {
+        ensureSpace(estimateTokenHeight(node.token))
         processToken(node.token, state)
       }
     }
@@ -2461,12 +2900,11 @@ function buildContentSlides(
 
   walkAndPaginate(tree)
 
-  // 最后一页收尾
   appendCitationFooter(
     state.elements,
     state.activeCitations,
     citationsDict,
-    state.currentY,
+    clampContentY(state.currentY),
   )
   slidesElements.push(state.elements)
 
@@ -2478,23 +2916,24 @@ function estimateNodeHeight(node: ContentNode): number {
   let h = 0
 
   if (node.type === 'list_item') {
-    // list_item 的高度 = 自身 bullet 文本 + 所有子节点
+    if (isArrangeableGroup(node)) {
+      const arrangement = getNodeArrangement(node, hashString(node.text || node.token.raw || node.type))
+      return getArrangementEstimate(node, arrangement)
+    }
+
     if (node.text.trim()) {
-      h += estimateTextHeight(node.text, BODY_FONT_SIZE, CONTENT_WIDTH - 20) + 8
+      h += getNodeOwnHeight(node)
     }
     for (const child of node.children) {
       h += estimateNodeHeight(child)
     }
-    // 列表组尾部间距（同 processToken 中 currentY += 4）
-    if (node.children.length === 0) h += 4
+    h += 4
   } else if (node.type === 'heading') {
-    // heading 自身 + 所有子节点（heading 是分组容器）
-    h += estimateTokenHeight(node.token)
+    h += getNodeOwnHeight(node)
     for (const child of node.children) {
       h += estimateNodeHeight(child)
     }
   } else {
-    // 叶节点：paragraph, table, blockquote, code
     h += estimateTokenHeight(node.token)
   }
 

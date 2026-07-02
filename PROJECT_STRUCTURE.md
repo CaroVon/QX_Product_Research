@@ -1,6 +1,6 @@
 # QX Product Research Agent — 项目脚本架构文档
 
-> **版本**: v0.7.1 | **更新**: 2026-06-30
+> **版本**: v0.7.1 | **更新**: 2026-07-02
 >
 > 本文档描述项目的完整脚本结构、每段脚本的核心代码片段及其在系统中的作用。
 >
@@ -10,6 +10,14 @@
 > - **Zustand 状态扩展**: clipX/Y/Width/Height 裁剪字段 + clipModeElementId/setClipMode 裁剪模式 + copiedSlide/copySlide/pasteSlide 跨页剪贴板
 > - **ProjectImage 数据模型**: 图片搜索持久化 (project_id FK, query, image_url, search_depth)
 > - **🆕 v0.7.1**: ddgs 图片搜索库升级至 v9.14.x (import `from ddgs import DDGS`, API: `DDGS().images(query, ...)`) + ImageGallery 空状态上下文提示 + 搜索失败与无结果区分提示
+>
+> **🆕 v0.7.2 更新** (2026-07-02):
+> - **引用合并去重**: `build_context_with_citations()` 同 URL 多 Chunk 合并为单一上下文块，URL 内 chunk 级去重；空 chunk 跳过
+> - **Prompt 格式规则重构**: bullet 拆分规则 (单 bullet 单结论，2-3 行) + 4+ 要点表格化 + 同事实去重 + 规则编号 2→9 重新编排
+> - **字符宽度模型重构 (dataTransform)**: `isWideChar()` 统一字符宽度判定 + CJK 1.0×/空格 0.32×/大写数字 0.62×/其他 0.58× + 行高 1.35→1.48 + `safeWidth` 除零防护 + `Math.ceil()` 底线对齐
+> - **排版引擎增强 (dataTransform)**: 上下文感知排版选择 (按子项数量和文本长度分级) + `shouldFallbackArrangement()` 溢出回退 vertical + `ensureSpace` 预检回调 + `buildLineElement()` 工厂统一装饰线 + 列表项去重渲染 (inlineText 合并到父节点)
+> - **Canvas 编辑器**: 所有 Konva Text 元素统一 `lineHeight=1.4`（声明式 + 原生导出双路径）+ `clipFunc` 类型断言修复
+> - **PDF CSS 修正**: `.slide` 高度 `100%` → `180mm` + `max-height` + `overflow:hidden`，防止幻灯片无限拉伸
 >
 > **v0.6 新增**: 
 > - **研究引擎**: 多模态绘图路由 `_write_image_section` + LLM 输出三阶段清理 `_clean_llm_output` + WritingTask Celery 基类 + Source Ranking 信息源分级权重 T0-T3 + Prompt 内容深度增强 (数据/事实密集度提升) + retriever_k 下限提升至 12 + 引用兜底 (LLM 不用引用时自动附加) + `max_tokens=4096`
@@ -1131,18 +1139,40 @@ def retrieve_context(query: str, k: int = 5, project_id: str | None = None) -> s
 def build_context_with_citations(documents: list[Document]) -> tuple[str, dict]:
     """
     将检索到的文档构建为带编号引用的上下文。
+    🆕 v0.7.2: 同 URL 的多个 Chunk 合并为同一个上下文块，
+    避免 LLM 因同源重复片段而反复复述同一事实。
     返回：(带 [^n] 标记的上下文字符串, {ref_num: {title, url, snippet}})
     """
-    seen_urls = {}
     context_parts = []
-    ref_num = 1
+    ref_map = {}
+    url_to_id = {}
+    url_to_chunks = {}  # 🆕 v0.7.2: 按 URL 分组 chunk，合并同源内容
+    current_id = 1
+
     for doc in documents:
-        url = doc.metadata.get("url", "")
-        if url and url not in seen_urls:
-            seen_urls[url] = ref_num
-            context_parts.append(f"[^{ref_num}] {doc.page_content}")
-            ref_num += 1
-    return "\n\n".join(context_parts), seen_urls
+        url = doc.metadata.get("url", "unknown")
+        chunk = (doc.page_content or "").strip()
+        if not chunk:
+            continue  # 🆕 跳过空 chunk
+
+        # URL 去重：同 URL 共享同一编号
+        if url not in url_to_id:
+            url_to_id[url] = current_id
+            ref_map[current_id] = url
+            url_to_chunks[url] = []
+            current_id += 1
+
+        if chunk not in url_to_chunks[url]:
+            url_to_chunks[url].append(chunk)
+
+    # 按 URL 合并输出，每个 URL 一个上下文块
+    for url, ref_id in url_to_id.items():
+        merged_content = "\n\n".join(url_to_chunks.get(url, []))
+        if merged_content:
+            context_parts.append(f"[^{ref_id}] {merged_content}")
+
+    context_str = "\n\n".join(context_parts)
+    return context_str, ref_map
 
 
 def resolve_and_append_citations(llm_output: str, ref_map: dict) -> str:
@@ -1245,10 +1275,17 @@ def _write_text_section(topic, section_title, project_id, template_type, search_
 - 每个要点都要有具体数据/事实/案例支撑，杜绝空泛口号
 
 【格式要求（为 PPT 排版优化）】：
-5. 【最高优先级：数据表格规范】绝不允许使用逗号分隔的 CSV 格式！
+2. 以 Bullet points（无序列表 - ）为主拆解观点；单个 bullet 只表达一个主结论，
+   尽量控制在 2-3 行内。若信息很多，拆成多个 bullet，禁止把多个并列事实塞进一个超长 bullet。
+3. 单个段落控制在 2-4 行（约 100 字内）；优先使用短段落 + 多 bullet，而不是长段落堆叠。
+4. 如有数据对比、参数差异、版本差异、竞品差异，强制使用 Markdown 表格输出。
+5. 若某小节下存在 4 条以上并列要点，优先按"维度/结论/数据"方式组织为表格或更短的 bullet 序列。
+6. 同一小节内，相同事实、相同参数、相同结论只表达一次；多来源支持同一事实时融合到同一 bullet。
+7. 你的输出将直接转化为幻灯片，请兼顾排版呼吸感与内容充实度。
+8. 【最高优先级：数据表格规范】绝不允许使用逗号分隔的 CSV 格式！
    绝不允许使用引号 " " 包围单元格内容！
    绝不允许输出 "The following table:" 这类前缀废话！
-6. 【最高优先级：引用格式】文内引用必须严格使用 [^1] 的角标格式！"""
+9. 【最高优先级：引用格式】文内引用必须严格使用 [^1] 的角标格式！"""
     response = llm.invoke(prompt)
     raw_content = _clean_llm_output(response.content, section_title)
     return resolve_and_append_citations(raw_content, ref_map)
@@ -1304,7 +1341,9 @@ def markdown_to_pdf(md_content: str, project_id: str, topic: str) -> str:
     return pdf_path
 
 def render_custom_html_to_pdf(raw_html: str, topic: str, output_pdf_path: str):
-    """🆕 v0.3: 接收前端自由编辑的 HTML → WeasyPrint 渲染 PDF"""
+    """🆕 v0.3: 接收前端自由编辑的 HTML → WeasyPrint 渲染 PDF
+    🆕 v0.7.2: .slide CSS 修正 — height: 180mm + max-height + overflow:hidden
+    替代 height:100%，防止幻灯片在 PDF 中无限拉伸"""
     # 确保输出目录存在（WeasyPrint 不会自动创建父目录）
     # 安全化 topic 中的 HTML 特殊字符（防 f-string 注入）
     safe_topic = topic.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1541,6 +1580,8 @@ function CanvasSlideEditor({ slides, activeIndex, onActiveIndexChange,
   // 暴露 editorApi: { addText, addImage } 给父组件
   // 导出：capturePage() → 原生 Konva 离屏 Stage → toBlob('image/jpeg', 0.92) → dataURL
   //   placeholder 元素导出时跳过，保持 PDF 干净
+  //   🆕 v0.7.2: 所有 Text 元素统一 lineHeight=1.4（声明式渲染 + 原生导出双路径）
+  //            clipFunc 类型断言修复 (imageNode as any).clipFunc(...)
   //   🆕 v0.7: 图片裁剪导出 — capturePage 中 image case 支持 clipFunc
 }
 
@@ -1679,7 +1720,7 @@ export const useCanvasStore = create<CanvasState>()(
 - React-Konva 声明式渲染：React 自动 diff 最小化 DOM 更新
 - zundo temporal 中间件：无侵入式 Undo/Redo，自动记录历史
 
-### 10.11 数据转换层 (`lib/dataTransform.ts`) — v0.4 根治 + v0.5 扩展 + v0.6 排版精修（约 1194 行）
+### 10.11 数据转换层 (`lib/dataTransform.ts`) — v0.4 根治 + v0.5 扩展 + v0.6 排版精修 + v0.7.2 字符宽度模型重构（约 1350 行）
 
 ```tsx
 export function convertBlocksToKonvaSlides(
@@ -1710,11 +1751,26 @@ export function convertBlocksToKonvaSlides(
 | **表格样式注入** | 自动生成表格继承品牌色表头 (headerFill=BRAND.primary) + 斑马纹 (rowAltFill) |
 | **resolveImageUrl 修正** | `outputs/` 前缀映射到 `/api/v1/files/`，移除硬编码 `http://localhost:8000` |
 
+**🆕 v0.7.2 字符宽度模型重构**:
+
+| 修复项 | 说明 |
+|--------|------|
+| **isWideChar() 抽取** | CJK/全角字符检测正则提取为独立函数 `isWideChar()`，`estimateTextHeight` 与 `estimateTextWidth` 共享同一套字符宽度模型 |
+| **字符宽度精调** | CJK: 0.95→1.0×, 空格: 0.3→0.32×, 大写/数字: 新增 0.62×, 其他: 0.55→0.58× |
+| **行高计算修正** | `fontSize * 1.35` → `fontSize * 1.48` + `Math.ceil()` + 2px padding，消除底线截断 |
+| **safeWidth 防护** | `safeWidth = Math.max(width, fontSize)` 防止窄容器除零导致行数爆炸 |
+| **列表项去重渲染** | `buildListItemNode()` 不再为内联文本创建 paragraph child 节点，改为提取 `inlineText` 合并到父节点 text，消除同层内容重复渲染 bug |
+| **排版溢出回退** | 新增 `shouldFallbackArrangement()`：非 vertical 排版预估超出页高时自动回退 vertical，避免内容溢出 |
+| **上下文感知排版选择** | `getNodeArrangement()` 按子项数量 (≤2 / 3-6 / ≥7) 和平均文本长度 (≤20 / ≤60 / >60) 从候选集中确定性选择，替代原来从全量 LEAF_ARRANGEMENTS 随机抽选 |
+| **ensureSpace 回调** | `renderTreeWalk()` 新增 `options.ensureSpace(requiredHeight)` 回调，节点渲染前预检空间，不足时自动触发换页 |
+| **buildLineElement 工厂** | 装饰线条统一通过 `buildLineElement()` 创建，`toLinePoints()` 辅助坐标转换，消除散落的 inline 构造 |
+| **类型安全升级** | `marked.Token` → `Token`，`marked.Tokens.X` → `Tokens.X`（从 marked 库直接 import 类型） |
+
 **v0.4 排版引擎根治**:
 
 | 修复项 | 说明 |
 |--------|------|
-| **双重累加消除** | `processToken` 返回 `void`（原返回 `consumedY` 导致外层 `+=` 再次累加），内部直接 `state.currentY += h` |
+| **双重累加消除** | `processToken` 返回 `void`（原返回 `consumedY` 导致外层 `+=` 再次累加），内部直接 `state.currentY += h`；🆕 v0.7.2 新增 `clampContentY()` 防止 currentY 溢出 CONTENT_END_Y |
 | **空页断层防护** | 翻页条件增加 `state.currentY > START_Y`，禁止空页强制翻页 |
 | **Logo URL 解析** | `buildSlideDecor` 中 `src: resolveImageUrl(logoUrl)` + `push`（修复 z-order 遮挡） |
 | **Logo Contain 缩放** | Logo 容器 160×60（原 100×40），`safeX` 同步调整为 220 |

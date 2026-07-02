@@ -3,30 +3,41 @@ import re
 def build_context_with_citations(retrieved_docs):
     """
     阶段一：构建带编号的上下文 (URL 去重处理)
-    如果检索出 5 个 Chunk，其中 3 个来自同一个 URL，则它们共享同一个编号。
-    
+    如果检索出 5 个 Chunk，其中 3 个来自同一个 URL，则它们共享同一个编号，
+    并合并为同一个上下文块，避免 LLM 因同源重复片段而反复复述同一事实。
+
     返回:
         context_str (str): 喂给 LLM 的字符串，长这样 "[参考资料 1] \n 内容..."
         ref_map (dict): {1: "https://...", 2: "https://..."} 供最后拼接使用
     """
-    context_str = ""
+    context_parts = []
     ref_map = {}
     url_to_id = {}
+    url_to_chunks = {}
     current_id = 1
 
     for doc in retrieved_docs:
         url = doc.metadata.get("url", "unknown")
-        
+        chunk = (doc.page_content or "").strip()
+        if not chunk:
+            continue
+
         # URL 去重：如果这个 URL 之前没见过，分配一个新 ID
         if url not in url_to_id:
             url_to_id[url] = current_id
             ref_map[current_id] = url
+            url_to_chunks[url] = []
             current_id += 1
-            
-        ref_id = url_to_id[url]
-        
-        context_str += f"[^{ref_id}] {doc.page_content}\n\n"
 
+        if chunk not in url_to_chunks[url]:
+            url_to_chunks[url].append(chunk)
+
+    for url, ref_id in url_to_id.items():
+        merged_content = "\n\n".join(url_to_chunks.get(url, []))
+        if merged_content:
+            context_parts.append(f"[^{ref_id}] {merged_content}")
+
+    context_str = "\n\n".join(context_parts)
     return context_str, ref_map
 
 def resolve_and_append_citations(llm_output, ref_map):
