@@ -1,6 +1,6 @@
 # ============================================================
 # QX Product Research Agent — 完整 Python 依赖
-# Version: 0.2.0 | Python: 3.10+ | Updated: 2026-06-22
+# Version: 1.0.0 | Python: 3.10+ | Updated: 2026-07-02
 # 安装: pip install -r requirements.txt
 # ============================================================
 

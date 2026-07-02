@@ -1,6 +1,6 @@
 # QX Product Research Agent — 项目脚本架构文档
 
-> **版本**: v0.7.1 | **更新**: 2026-07-02
+> **版本**: v1 | **更新**: 2026-07-02
 >
 > 本文档描述项目的完整脚本结构、每段脚本的核心代码片段及其在系统中的作用。
 >
@@ -18,6 +18,12 @@
 > - **排版引擎增强 (dataTransform)**: 上下文感知排版选择 (按子项数量和文本长度分级) + `shouldFallbackArrangement()` 溢出回退 vertical + `ensureSpace` 预检回调 + `buildLineElement()` 工厂统一装饰线 + 列表项去重渲染 (inlineText 合并到父节点)
 > - **Canvas 编辑器**: 所有 Konva Text 元素统一 `lineHeight=1.4`（声明式 + 原生导出双路径）+ `clipFunc` 类型断言修复
 > - **PDF CSS 修正**: `.slide` 高度 `100%` → `180mm` + `max-height` + `overflow:hidden`，防止幻灯片无限拉伸
+>
+> **🆕 v1 更新** (2026-07-02):
+> - **dev_section_loop.py** (NEW ~520 行): 绕过 Celery/Redis，直接调用 `write_section()` → DocumentBlock → Canvas 渲染全链路，秒级验证排版修改效果。支持 checkpoint 管理、`--section` 单章重跑、`--dry-run` 预览、`--diff` 对比
+> - **DEV_SECTION_LOOP.md** (NEW ~314 行): 开发循环工具完整文档（checkpoint 生命周期、常见工作流、FAQ）
+> - **Prompt 层级结构增强 (prompts.py)**: product/design 双模板 "分组 + 并列项" 结构指导（并列要点组 / 顺序流程 / 短句集合 / 名称：说明格式），替代旧版机械层级要求；新增分页安全规则（超长 bullet 自动拆分）+ 表格优先级强化
+> - **.gitignore 补充**: `scripts/.dev_checkpoint.json` 排除开发循环 checkpoint 文件
 >
 > **v0.6 新增**: 
 > - **研究引擎**: 多模态绘图路由 `_write_image_section` + LLM 输出三阶段清理 `_clean_llm_output` + WritingTask Celery 基类 + Source Ranking 信息源分级权重 T0-T3 + Prompt 内容深度增强 (数据/事实密集度提升) + retriever_k 下限提升至 12 + 引用兜底 (LLM 不用引用时自动附加) + `max_tokens=4096`
@@ -95,6 +101,7 @@ QX_product_agent/
 ├── test_llm.py                 # LLM 连通性测试脚本
 ├── STRUCTURE_UPDATE_0623.md    # v0.2→v0.3 结构变更记录
 ├── STRUCTURE_UPDATE_0624.md    # v0.3→v0.4 结构变更记录
+├── DEV_SECTION_LOOP.md          # 开发循环工具文档
 │
 ├── start_all.sh                # WSL 全模块一键启动
 ├── stop_all.sh                 # WSL 全模块停止
@@ -105,6 +112,7 @@ QX_product_agent/
 ├── backend/                    # FastAPI 后端 + Celery 任务队列 + Alembic 迁移 + 测试
 ├── frontend/                   # React + Vite 前端
 ├── tests/                      # 评测脚本（检索/排序/引用质量）
+├── scripts/                    # 开发工具脚本
 ├── fix/                        # 问题修复记录
 ├── memory/                     # Claude Code 持久记忆
 └── venv/                       # Python 虚拟环境
@@ -173,6 +181,69 @@ pause
 ### 3.4 `test_llm.py` — LLM 连通性快速验证
 
 用于验证 DeepSeek API Key 配置是否正确、模型是否可达的小型诊断脚本。
+
+### 3.5 `scripts/dev_section_loop.py` — section_writer → Canvas 单点测试循环（约 520 行）
+
+**作用**: 绕过 Celery/Redis，直接调用 `write_section()` → DocumentBlock → Canvas 渲染全链路，秒级验证 LLM 撰写输出和排版修改效果。
+
+```bash
+# 查看当前检查点状态
+python scripts/dev_section_loop.py status
+
+# 重跑全部章节（使用已保存的检查点项目）
+python scripts/dev_section_loop.py run
+
+# 指定项目重跑（自动保存为检查点）
+python scripts/dev_section_loop.py run --project <project_id>
+
+# 只重跑单个章节
+python scripts/dev_section_loop.py run --section "竞品分析"
+
+# dry-run：预览输出但不写入数据库
+python scripts/dev_section_loop.py run --dry-run
+
+# 跳过图片搜索（加速迭代）
+python scripts/dev_section_loop.py run --no-images
+
+# 与上次运行对比差异
+python scripts/dev_section_loop.py run --diff
+```
+
+**设计意图**: 全流程（创建项目 → Phase 1 搜索 → 审核 → Phase 2 大纲 → 审批 → Phase 3 撰写 → 编辑器）耗时 5-10 分钟，其中 Phase 1/2 在排版调试期间完全不需要变更。此工具将流程压缩为"一次性创建项目并审批到 WAITING_FOR_OUTLINE → 反复 `python scripts/dev_section_loop.py run` → 刷新浏览器"，每次迭代 30-60 秒。
+
+**核心逻辑**:
+```python
+# 1. 加载检查点项目（或从 CLI --project 参数指定）
+checkpoint = _load_checkpoint()  # 读取 scripts/.dev_checkpoint.json
+project_id = checkpoint["project_id"]
+
+# 2. 获取大纲 → 提取章节标题
+repo = ProjectRepo()
+project = repo.get_project(project_id)
+sections = _extract_sections(project.outline_content)
+
+# 3. 逐章重跑 write_section()
+for section_title in sections:
+    content = write_section(topic, section_title, project_id=project_id,
+                           template_type=template_type, search_depth=search_depth)
+    _save_section_as_blocks(repo, project_id, section_title, content, idx)
+    # 可选：--dry-run 时不写入 DB，仅打印预览
+    # 可选：--diff 时用 difflib 对比新旧输出
+
+# 4. 保存运行记录 → scripts/.dev_checkpoint.json
+_save_checkpoint(project_id, last_section=section_title, run_count=run_count + 1)
+```
+
+### 3.6 `DEV_SECTION_LOOP.md` — 开发循环工具文档（约 314 行）
+
+**作用**: 完整说明 dev_section_loop 工具的工作原理、checkpoint 生命周期管理、常见工作流和 FAQ。
+
+核心章节：
+- **为什么需要这个工具？** — 对比全流程 5-10 分钟 vs 单点循环 30-60 秒
+- **核心原理** — 架构图：绕过 Celery Worker，直连 `write_section()` + SQLAlchemy Session
+- **checkpoint 管理** — `scripts/.dev_checkpoint.json` 文件结构 + `--save`/`--status` 命令
+- **常见工作流** — 四种典型场景（初始设置 / 快速迭代 / 单章调试 / 排版验证）
+- **FAQ** — 6 个常见问题解答
 
 ---
 

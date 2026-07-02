@@ -1,6 +1,6 @@
 # 🔬 QX Product Research Agent
 
-> **v0.7.1** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供 Canvas 幻灯片编辑器 + 图片素材库 + 图片裁剪 + 幻灯片管理。
+> **v1** — 一款具备「断点干预、块级编辑、多轮迭代」能力的 AI 产品分析研究智能体。从全网搜索、本地文档上传、知识库构建、大纲规划到逐章 AI 撰写与 16:9 横版 PPT 风格 PDF 输出，全流程自动化，并提供 Canvas 幻灯片编辑器 + 图片素材库 + 图片裁剪 + 幻灯片管理。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136-green.svg)](https://fastapi.tiangolo.com/)
@@ -32,6 +32,19 @@
 - 🎯 ImageGallery 空状态按项目阶段显示上下文引导提示
 - 🔍 搜索失败与无结果区分提示（HTTP 错误 vs 空结果）
 - 🔄 DRAFTING 阶段 15s 自动轮询刷新图片列表
+
+**v0.7.2 排版引擎重构：**
+- 🔗 **引用合并去重** — `build_context_with_citations()` 同 URL 多 Chunk 合并为单一上下文块，URL 内 chunk 级去重
+- 📝 **Prompt 格式规则重构** — 单 bullet 单结论 + 2-3 行限制 + 4+ 要点表格化 + 同事实去重 + 规则编号 2→9 重新编排
+- 🔤 **字符宽度模型重构** — `isWideChar()` 统一字符宽度判定 + CJK 1.0×/空格 0.32×/大写数字 0.62×/其他 0.58× + 行高 1.35→1.48 + `safeWidth` 除零防护 + `Math.ceil()` 底线对齐
+- 🎨 **排版引擎增强** — 上下文感知排版选择 + 溢出回退 vertical + `ensureSpace` 预检回调 + `buildLineElement()` 工厂 + 列表项去重渲染
+- 📐 **Canvas 编辑器修复** — 所有 Konva Text 统一 `lineHeight=1.4` + `clipFunc` 类型断言修复
+- 📄 **PDF CSS 修正** — `.slide` 高度 `100%` → `180mm` + `max-height` + `overflow:hidden`
+
+**v1 开发工具链：**
+- 🧪 **dev_section_loop.py** — 绕过 Celery/Redis，直接调用 section_writer → DocumentBlock → Canvas 渲染全链路，秒级验证排版修改效果
+- 📚 **DEV_SECTION_LOOP.md** — 开发循环工具完整文档（checkpoint 管理、增量重跑、diff 对比）
+- 🏗️ **Prompt 层级结构增强** — product/design 双模板 "分组 + 并列项" 结构指导 + 分页安全规则 + 表格优先级强化
 
 **目标用户：** 资深产品经理 (PM)、用户体验专家 (UX)、工业设计战略家。
 
@@ -235,19 +248,19 @@ QX_product_agent/
 │   │   ├── vector_store.py           #     Chroma 持久化向量库
 │   │   ├── retriever.py              #     混合检索 + RRF 融合
 │   │   ├── rag_pipeline.py           #     知识库构建编排
-│   │   ├── citation_utils.py         #     引用编号与溯源
+│   │   ├── citation_utils.py         #     引用编号与溯源 (含 URL 合并去重)
 │   │   └── local_parser.py           #     🆕 本地 PDF 解析 (PyMuPDF)
 │   ├── planner/                      #   大纲规划
 │   │   ├── outline_generator.py      #     LLM 大纲生成
 │   │   ├── query_planner.py          #     查询规划
 │   │   └── compare_query.py          #     查询对比
 │   ├── report/                       #   报告生成
-│   │   ├── section_writer.py         #     RAG 章节撰写 (含引用)
+│   │   ├── section_writer.py         #     RAG 章节撰写 (含引用 + 多模态路由)
 │   │   ├── markdown_formatter.py     #     Markdown 组装
 │   │   └── pdf_generator.py          #     16:9 横版 PPT PDF
 │   ├── llm/                          #   LLM 客户端
 │   │   ├── client.py                 #     DeepSeek Chat 工厂
-│   │   └── prompts.py                #     系统提示词模板
+│   │   └── prompts.py                #     系统提示词模板 (product/design 双模板)
 │   ├── orchestrator/workflow.py      #   端到端 CLI 工作流
 │   └── shared/outline_parser.py      #   大纲 Markdown 解析器
 │
@@ -320,6 +333,9 @@ QX_product_agent/
 │   ├── eval_ranking.py               #   排序质量评测
 │   └── eval_citation.py              #   引用溯源评测
 │
+├── scripts/                          # 🧪 开发工具脚本
+│   └── dev_section_loop.py           #   section_writer → Canvas 单点测试循环
+│
 ├── memory/                           # Claude Code 持久记忆
 ├── fix/                              # 问题修复记录
 ├── start_all.sh                      # WSL/Linux 全模块一键启动
@@ -328,6 +344,7 @@ QX_product_agent/
 ├── requirements.txt                  # Python 依赖清单
 ├── prd.md                            # 产品需求文档
 ├── command.txt                       # 快速启动命令备忘
+├── DEV_SECTION_LOOP.md               # 开发循环工具文档
 └── PROJECT_STRUCTURE.md              # 详细脚本架构文档
 ```
 
@@ -458,6 +475,10 @@ cd frontend && npm run dev
 | **canvasRef editorApi** | 父组件通过 ref 调用 addText/addImage 直连 Zustand store，AI 面板与编辑器松耦合 |
 | **本地上传 + 远程搜索双通道** | 用户既可依赖全自动搜索，也可上传自有 PDF 参考文档 |
 | **Flux 架构: Dispatch → Action → Store → View** | 前端状态管理遵循单向数据流，useProjectStatus 为中央 Dispatch |
+| **引用 URL 合并去重** | 同源多 Chunk 合并为单上下文块，防止 LLM 因重复片段复述同一事实 |
+| **dev_section_loop 快速迭代** | 绕过 Celery/Redis 直连 section_writer，秒级验证 LLM 输出 → Canvas 排版效果 |
+| **上下文感知排版选择** | 按子项数量和文本长度分级选择排版策略，替代随机抽取；溢出时自动回退 vertical |
+| **Prompt 层级结构 "分组+并列"** | 引导 LLM 输出稳定可预测的结构，提升卡片/对比列/时间轴等版式的触发率 |
 
 ---
 
