@@ -102,21 +102,24 @@ echo ""
 # ─── 5. FastAPI 后端 (端口 8000，稳定模式 / 无 reload) ────
 info "启动 FastAPI 后端 (端口 8000, 稳定模式)..."
 cd "$PROJECT_ROOT/backend"
-nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+# ⚠️ 必须用 python -m 启动：venv/bin/uvicorn 的 shebang 指向 /mnt/d 旧路径
+# （Windows 侧项目副本，9P 挂载极慢），直接执行会导致进程卡死 (D 状态)
+nohup "$PROJECT_ROOT/venv/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
     > "$RUNTIME_DIR/api.log" 2>&1 &
 FASTAPI_PID=$!
 ok "FastAPI 已启动 (PID: $FASTAPI_PID, 端口: 8000)"
 echo "   日志: backend/runtime/api.log"
 echo ""
 
-# ─── 6. Celery Worker (线程池模式，独立进程) ────────────────
+# ─── 6. Celery Worker (prefork 池，独立进程) ────────────────
+# prefork 使 task_time_limit 硬超时真正生效（threads 池无法强杀线程）
 info "启动 Celery Worker..."
 cd "$PROJECT_ROOT/backend"
-nohup celery -A app.core.celery_app.celery_app worker \
-    --loglevel=info --concurrency=4 --pool=threads \
+nohup "$PROJECT_ROOT/venv/bin/python" -m celery -A app.core.celery_app.celery_app worker \
+    --loglevel=info --concurrency=4 --pool=prefork \
     > "$RUNTIME_DIR/celery.log" 2>&1 &
 CELERY_PID=$!
-ok "Celery Worker 已启动 (PID: $CELERY_PID, pool: threads)"
+ok "Celery Worker 已启动 (PID: $CELERY_PID, pool: prefork)"
 echo "   日志: backend/runtime/celery.log"
 echo ""
 

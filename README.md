@@ -48,6 +48,14 @@
 
 **目标用户：** 资深产品经理 (PM)、用户体验专家 (UX)、工业设计战略家。
 
+**🚀 v2（AI Product Studio）:**
+- 🧩 **agent-platform 平台层** — 独立的 Agent Runtime（LangGraph + Agent Harness），不侵入既有业务代码
+- 🤖 **四个专业 Agent** — Research / Product / Design / Presentation，由七节点 LangGraph 工作流编排
+- 📐 **结构化输出** — 全部 Agent 输出经 Pydantic Schema 校验（Markdown-first → JSON + Renderer）
+- 🎛️ **Product Studio 工作台** — `/studio`：输入想法 → 七节点进度 → 市场分析/竞品矩阵/画像/PRD/路线图/演示 输出工作区
+- 🎬 **Slide JSON 演示** — SlideRenderer 16:9 Web 演示 + PPT 风格 PDF 导出
+- 详见 [MIGRATION.md](./MIGRATION.md) 与 `~/dev/agents/agent-platform/`
+
 ---
 
 ## 🏗️ 系统架构
@@ -231,6 +239,15 @@
 | `POST` | `/api/v1/editor/revise-block/{id}` | 块级精准改写 (基于 DocumentBlock 上下文) |
 | `POST` | `/api/v1/editor/chat` | 🤖 SSE 流式 AI 对话 (支持 work/chat 双模式 + RAG) |
 
+### 🚀 AI Product Studio（v2）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/product/create` | 创建产品，异步触发多 Agent 流水线 (七节点) |
+| `GET` | `/api/v1/product/{id}` | 产品资产包：`{research, strategy, design, presentation, ...}` + 进度/错误 |
+| `GET` | `/api/v1/product` | 产品列表 (分页) |
+| `POST` | `/api/v1/product/{id}/export-pdf` | Slide JSON → 16:9 PPT 风格 PDF |
+
 ---
 
 ## 📁 项目结构
@@ -304,10 +321,18 @@ QX_product_agent/
 │   └── src/
 │       ├── pages/                    #   页面组件
 │       │   ├── DashboardPage.tsx     #     项目列表仪表盘
+│       │   ├── ProductStudioPage.tsx #     🆕 v2: AI Product Studio 工作台 (/studio)
 │       │   ├── WorkspacePage.tsx     #     ★ 三栏工作台 (核心, ~1287行)
 │       │   ├── ReportPage.tsx        #     报告阅读器
 │       │   └── ProgressPage.tsx      #     进度详情页
 │       ├── components/               #   可复用组件
+│       │   ├── MarketCard.tsx        #     🆕 v2: 市场分析卡片（渲染 MarketResearch JSON）
+│       │   ├── CompetitorMatrix.tsx  #     🆕 v2: 竞品对比矩阵
+│       │   ├── PersonaCard.tsx       #     🆕 v2: 用户画像卡片
+│       │   ├── FeatureMatrix.tsx     #     🆕 v2: 功能清单矩阵
+│       │   ├── RoadmapTimeline.tsx   #     🆕 v2: 路线图时间线
+│       │   ├── PRDViewer.tsx         #     🆕 v2: PRD 阅读器
+│       │   ├── SlideRenderer.tsx     #     🆕 v2: Slide JSON 演示渲染器 (Web + PDF 导出)
 │       │   ├── layout/               #     布局: Sidebar / ThreePaneLayout
 │       │   ├── projects/             #     项目: CreateProjectModal / SourcesReview
 │       │   │                         #           OutlineApproval / ProgressTracker
@@ -334,8 +359,10 @@ QX_product_agent/
 │   └── eval_citation.py              #   引用溯源评测
 │
 ├── scripts/                          # 🧪 开发工具脚本
-│   └── dev_section_loop.py           #   section_writer → Canvas 单点测试循环
+│   ├── dev_section_loop.py           #   section_writer → Canvas 单点测试循环
+│   └── studio_pipeline_smoke.py      #   🆕 v2: Product Studio 流水线真实 LLM 冒烟测试
 │
+├── MIGRATION.md                      # 🆕 v2: AI Product Studio 迁移文档
 ├── memory/                           # Claude Code 持久记忆
 ├── fix/                              # 问题修复记录
 ├── start_all.sh                      # WSL/Linux 全模块一键启动
@@ -479,6 +506,9 @@ cd frontend && npm run dev
 | **dev_section_loop 快速迭代** | 绕过 Celery/Redis 直连 section_writer，秒级验证 LLM 输出 → Canvas 排版效果 |
 | **上下文感知排版选择** | 按子项数量和文本长度分级选择排版策略，替代随机抽取；溢出时自动回退 vertical |
 | **Prompt 层级结构 "分组+并列"** | 引导 LLM 输出稳定可预测的结构，提升卡片/对比列/时间轴等版式的触发率 |
+| **🆕 v2: agent-platform 独立平台层** | LangGraph/Agent Harness 全部落在 `~/dev/agents/agent-platform`，业务侧仅桥接配置，杜绝框架侵入 |
+| **🆕 v2: 结构化输出契约** | 每个 Agent 输出经 Pydantic 校验（LLM JSON → Schema → 前端渲染），LLM 禁止生成 HTML/CSS |
+| **🆕 v2: 节点重试与降级** | 工作流节点失败重试后结构化记录错误并降级继续，其余资产照常交付 |
 
 ---
 
@@ -599,3 +629,4 @@ MIT License — 详见 [LICENSE](LICENSE)
 - **源码仓库**: [https://github.com/CaroVon/QX_Product_Research](https://github.com/CaroVon/QX_Product_Research)
 - **详细架构文档**: [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)
 - **产品需求文档**: [prd.md](./prd.md)
+- **🆕 v2 迁移文档**: [MIGRATION.md](./MIGRATION.md)（AI Product Studio 架构、组件清单、测试结果与风险）
