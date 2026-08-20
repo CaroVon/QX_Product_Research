@@ -521,13 +521,12 @@ export interface MemoryEntityDetail {
   scope: 'global' | 'project'
   summary?: string
   aliases?: string[]
+  /** 后端契约（/memory/entities/{id}）：{relation_id, relation, direction, other} */
   relations?: Array<{
-    type: string
-    target: string
-    target_name?: string
-    target_type?: MemoryEntityType
-    weight?: number
+    relation_id?: string
+    relation: string
     direction?: 'out' | 'in'
+    other?: { id: string; name: string; type?: MemoryEntityType }
   }>
   sources?: Array<{ url?: string; title?: string }>
 }

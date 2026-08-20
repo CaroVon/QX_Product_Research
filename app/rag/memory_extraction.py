@@ -363,6 +363,63 @@ def _vectorize_entities(repo, entity_ids: list[str], project_id: str) -> None:
 # 2. 全局提升（项目记忆 → 全局记忆）
 # ══════════════════════════════════════════════════════════════
 
+def promote_entity_to_global(entity_id: str) -> dict:
+    """手动把单个项目实体提升为全局（图谱侧栏「提升到全局记忆」入口）。
+
+    逻辑与 promote_global_memories 的单实体分支一致：创建/合并 global
+    实体并复制其关系；幂等（已存在 global 同名实体时合并）。
+    """
+    repo = _get_repo()
+    try:
+        entity = repo.get_entity(entity_id)
+    except Exception:  # noqa: BLE001
+        entity = None
+    if entity is None:
+        return {"promoted": False, "reason": "实体不存在"}
+    if entity.scope == "global":
+        return {"promoted": False, "reason": "已是全局实体"}
+    now = _now()
+    global_entity = repo.find_global_entity(entity.name)
+    created_new = global_entity is None
+    if global_entity:
+        repo.update_entity_merge(
+            str(global_entity.id),
+            new_alias=entity.name,
+            new_summary=entity.summary or global_entity.summary,
+            confidence_delta=0.05,
+            last_seen=now,
+        )
+        gid = global_entity.id
+    else:
+        gid = repo.save_memory_entity(
+            scope="global", project_id=None, type=entity.type,
+            name=entity.name, summary=entity.summary,
+            confidence=min(0.9, entity.confidence + 0.1),
+            first_seen=now, last_seen=now,
+        ).id
+    copied = 0
+    for rel in repo.list_relations_for_entity(str(entity.id)):
+        other_id = rel.target_entity_id if str(rel.source_entity_id) == str(entity.id) \
+            else rel.source_entity_id
+        if str(other_id) == str(entity.id):
+            continue
+        src, tgt = (gid, other_id) if str(rel.source_entity_id) == str(entity.id) \
+            else (other_id, gid)
+        if not repo.find_relation(str(src), str(tgt), rel.relation_type, active_only=True):
+            repo.save_memory_relation(
+                source_id=str(src), target_id=str(tgt),
+                relation_type=rel.relation_type,
+                evidence=rel.evidence, weight=rel.weight,
+                valid_from=rel.valid_from,
+            )
+            copied += 1
+    if not created_new and copied == 0:
+        # 幂等：全局已存在同名实体且无新增关系 → 非提升
+        return {"promoted": False, "reason": "全局已存在同名实体且无新增关系",
+                "global_entity_id": str(gid)}
+    return {"promoted": True, "global_entity_id": str(gid), "relations_copied": copied}
+
+
 def promote_global_memories(project_id: str) -> int:
     """
     将跨项目复现的实体/洞察提升为全局记忆：
@@ -377,8 +434,9 @@ def promote_global_memories(project_id: str) -> int:
         project_entities = repo.list_project_entities(project_id)
         for entity in project_entities:
             name = entity.name
-            # 跨项目计数（同 scope=project 同名词，不同 project_id）
-            similar = repo.count_entity_by_name_across_projects(name, exclude_project=project_id)
+            # 跨任务复现计数（双通道合并：research 项目 + Studio 任务）
+            similar = repo.count_entity_across_all_tasks(
+                name, exclude_project=project_id)
             if similar + 1 < PROMOTE_MIN_PROJECTS:
                 continue
             global_entity = repo.find_global_entity(name)
@@ -540,7 +598,14 @@ def get_memory_graph(
     repo = _get_repo()
 
     if scope == "project" and not project_id and not studio_product_id:
-        scope = "global"
+        # 项目视图未指定任务 → 返回空图（不回落 global：
+        # 回落会造成项目视图闪现全局旧数据，前端切换体验实测受损）
+        return {
+            "nodes": [], "edges": [], "query": q,
+            "meta": {"entity_count": 0, "relation_count": 0,
+                     "projects_covered": 0, "studio_products_covered": 0,
+                     "truncated": False},
+        }
     entities = repo.list_memory_entities(
         scope=scope, project_id=project_id, studio_product_id=studio_product_id, q=q,
         entity_types=entity_types, min_confidence=min_confidence,

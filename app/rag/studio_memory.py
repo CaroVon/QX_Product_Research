@@ -189,10 +189,12 @@ def extract_memory_from_studio_product(
 
 
 def promote_global_studio_memories(repo, product_id: str) -> int:
-    """将至少出现在两个 Studio 任务中的实体提升到全局记忆。"""
+    """将至少出现在两个任务（Studio 或 research 项目合并计数）的实体提升到全局记忆。"""
     promoted = 0
     for entity in repo.list_studio_entities(product_id):
-        if repo.count_studio_entity_by_name_across_products(entity.name, product_id) < 1:
+        # 双通道合并计数：同名实体跨 research 项目 + Studio 任务合计 ≥2
+        if repo.count_entity_across_all_tasks(
+                entity.name, exclude_product=product_id) < 1:
             continue
         global_entity = repo.find_global_entity(entity.name)
         if global_entity:

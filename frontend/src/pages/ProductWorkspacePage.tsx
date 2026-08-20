@@ -30,10 +30,14 @@ import { IdeaInput } from '@/components/workspace/IdeaInput'
 import { ClarifyPanel } from '@/components/workspace/ClarifyPanel'
 import { AssetPanel } from '@/components/workspace/AssetPanel'
 import { KnowledgePanel } from '@/components/workspace/KnowledgePanel'
+import {
+  DesignStylePicker,
+  type DesignStyleValue,
+} from '@/components/workspace/DesignStylePicker'
 import { AgentTimeline } from '@/components/ai/AgentTimeline'
 import { ToolExecution } from '@/components/ai/ToolExecution'
 import { StreamingMessage } from '@/components/ai/StreamingMessage'
-import { productApi } from '@/lib/api'
+import { productApi, type PptOptions } from '@/lib/api'
 import type { StudioProduct } from '@/types/studio'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/common/button'
@@ -95,6 +99,9 @@ function HeroEmpty({
   handleClarifyGenerate,
   dynamicSuggestions,
   handleSuggestionInput,
+  pptOptions,
+  designStyle,
+  setDesignStyle,
 }: {
   inputMode: 'chat' | 'quick'
   setInputMode: (m: 'chat' | 'quick') => void
@@ -105,6 +112,9 @@ function HeroEmpty({
   handleClarifyGenerate: (brief: string) => void
   dynamicSuggestions: string[]
   handleSuggestionInput: (v: string) => void
+  pptOptions: PptOptions | null
+  designStyle: DesignStyleValue
+  setDesignStyle: (v: DesignStyleValue) => void
 }) {
   return (
     <div className="space-y-8">
@@ -183,8 +193,8 @@ function HeroEmpty({
         </div>
       </div>
 
-      {/* 输入区：chat / quick 双 Tab */}
-      <div className="mx-auto max-w-3xl">
+      {/* 输入区：chat / quick 双 Tab（与上方 Hero 同宽） */}
+      <div className="w-full">
         <div className="mb-4 inline-flex rounded-lg border border-border bg-card p-1 shadow-elev-xs">
           {(
             [
@@ -225,6 +235,15 @@ function HeroEmpty({
               creating={creating}
             />
           )}
+        </div>
+
+        {/* 设计风格（模板决定权）：主题 9 套预览 + 风格方法论 */}
+        <div className="mt-3">
+          <DesignStylePicker
+            options={pptOptions}
+            value={designStyle}
+            onChange={setDesignStyle}
+          />
         </div>
       </div>
     </div>
@@ -481,6 +500,27 @@ export function ProductWorkspacePage() {
   const [idea, setIdea] = useState(templateIdea ?? '')
   const [dynamicSuggestions, setDynamicSuggestions] = useState<string[]>([])
   const [creating, setCreating] = useState(false)
+  // 模板选择权（设计主题/风格方法论；null = AI 自主决策）
+  const [pptOptions, setPptOptions] = useState<PptOptions | null>(null)
+  const [designStyle, setDesignStyle] = useState<DesignStyleValue>({
+    themeId: null,
+    styleId: null,
+  })
+
+  useEffect(() => {
+    let alive = true
+    productApi
+      .pptOptions()
+      .then((opts) => {
+        if (alive) setPptOptions(opts)
+      })
+      .catch(() => {
+        /* 选项加载失败不阻塞创建（AI 自动匹配兜底） */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
   const [product, setProduct] = useState<StudioProduct | null>(null)
   const [recent, setRecent] = useState<Array<{ product_id: string; idea: string; status: string }>>([])
   const [loadError, setLoadError] = useState('')
@@ -615,7 +655,10 @@ export function ProductWorkspacePage() {
     setCreating(true)
     setLoadError('')
     try {
-      const created = await productApi.create(trimmed)
+      const created = await productApi.create(trimmed, {
+        theme_id: designStyle.themeId,
+        style_id: designStyle.styleId,
+      })
       await loadProduct(created.product_id)
       loadRecent()
     } catch (err) {
@@ -631,7 +674,10 @@ export function ProductWorkspacePage() {
     setCreating(true)
     setLoadError('')
     try {
-      const created = await productApi.create(brief)
+      const created = await productApi.create(brief, {
+        theme_id: designStyle.themeId,
+        style_id: designStyle.styleId,
+      })
       await loadProduct(created.product_id)
       loadRecent()
     } catch (err) {
@@ -705,6 +751,9 @@ export function ProductWorkspacePage() {
           handleClarifyGenerate={handleClarifyGenerate}
           dynamicSuggestions={dynamicSuggestions}
           handleSuggestionInput={handleSuggestionInput}
+          pptOptions={pptOptions}
+          designStyle={designStyle}
+          setDesignStyle={setDesignStyle}
         />
       )}
 

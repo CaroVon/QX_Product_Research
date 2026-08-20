@@ -51,10 +51,17 @@ export function GraphCanvas({
   const onBackgroundClickRef = useRef(onBackgroundClick)
   onBackgroundClickRef.current = onBackgroundClick
 
-  /** 用当前数据（ref）重放 option 到实例 */
+  /** 用当前数据（ref）重放 option 到实例。
+
+  空数据必须 chart.clear()——否则切换到空项目时 ECharts 保留上一项目的
+  option，视觉上"卡在上一项目静态图"（实测根因）。
+  */
   const renderData = (chart: ECharts, theme: GraphTheme) => {
     const current = dataRef.current
-    if (!current || current.nodes.length === 0) return
+    if (!current || current.nodes.length === 0) {
+      chart.clear()
+      return
+    }
     const option = buildGraphOption(current, theme)
     chart.setOption(option, { notMerge: true, lazyUpdate: true })
 
@@ -157,14 +164,14 @@ export function GraphCanvas({
       )}
 
       {isEmpty && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-2xl bg-[hsl(var(--graph-bg))] text-center">
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-secondary text-2xl">
             🕸️
           </div>
-          <p className="text-sm font-medium">记忆图谱还是空的</p>
+          <p className="text-sm font-medium">该范围暂无记忆实体</p>
           <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-            完成一个研究任务后，系统会自动从章节、经验包与图片分析中提炼
-            实体、关系与洞察，在这里生成属于你的知识关系图。
+            完成一个研究/产品任务后，系统会自动从章节、经验包与图片分析中
+            提炼实体、关系与洞察；也可在下方点击「重建记忆图谱」立即抽取。
           </p>
         </div>
       )}

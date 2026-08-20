@@ -454,14 +454,45 @@ export function connectDraftStream(projectId: string): EventSource {
 
 // ─── AI Product Studio API ────────────────────────────────────
 
+/** 模板选择器数据源（GET /product/ppt-options） */
+export interface PptThemeOption {
+  id: string
+  name: string
+  summary: string
+  palette: Record<string, string>
+  preview: string
+}
+
+export interface PptStyleOption {
+  id: string
+  summary: string
+  keywords: string[]
+}
+
+export interface PptOptions {
+  themes: PptThemeOption[]
+  styles: PptStyleOption[]
+}
+
 export const productApi = {
   /** 创建产品：触发 Research → Product → Design → Presentation 流水线（异步） */
-  create(idea: string): Promise<StudioProductCreateResponse> {
+  create(
+    idea: string,
+    opts?: { theme_id?: string | null; style_id?: string | null },
+  ): Promise<StudioProductCreateResponse> {
+    const body: Record<string, unknown> = { idea }
+    if (opts?.theme_id) body.theme_id = opts.theme_id
+    if (opts?.style_id) body.style_id = opts.style_id
     return request('/product/create', {
       method: 'POST',
       headers: { 'Idempotency-Key': productIdempotencyKey(idea) },
-      body: JSON.stringify({ idea }),
+      body: JSON.stringify(body),
     })
+  },
+
+  /** 模板选择器数据源：设计主题（含预览图）+ 风格方法论 */
+  pptOptions(): Promise<PptOptions> {
+    return request('/product/ppt-options')
   },
 
   /** 获取产品资产包（前端轮询直至 status=completed/failed） */
@@ -837,7 +868,7 @@ export const memoryApi = {
   },
 
   async entity(id: string): Promise<import('@/types/api').MemoryEntityDetail> {
-    return request(`/memory/entity/${encodeURIComponent(id)}`)
+    return request(`/memory/entities/${encodeURIComponent(id)}`)
   },
 
   async insights(params: { scope: 'global' | 'project'; projectId?: string; studioProductId?: string }) {
@@ -850,9 +881,30 @@ export const memoryApi = {
     )
   },
 
+  /** 重建记忆图谱：Studio 任务走专用端点（studio: 前缀剥离后为 product UUID） */
   async rebuild(projectId: string): Promise<{ status: string }> {
+    if (projectId.startsWith('studio:')) {
+      return request(
+        `/memory/rebuild-studio/${encodeURIComponent(projectId.slice('studio:'.length))}`,
+        { method: 'POST' },
+      )
+    }
     return request(`/memory/rebuild/${encodeURIComponent(projectId)}`, {
       method: 'POST',
+    })
+  },
+
+  /** 手动提升实体到全局记忆 */
+  async promoteEntity(id: string): Promise<{ promoted: boolean }> {
+    return request(`/memory/entities/${encodeURIComponent(id)}/promote`, {
+      method: 'POST',
+    })
+  },
+
+  /** 删除实体（级联删除关系） */
+  async deleteEntity(id: string): Promise<{ deleted: boolean }> {
+    return request(`/memory/entities/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     })
   },
 }

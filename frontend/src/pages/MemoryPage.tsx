@@ -171,7 +171,7 @@ export function MemoryPage() {
           <input
             value={filter.q}
             onChange={(e) => patchFilter({ q: e.target.value })}
-            onKeyDown={(e) => e.key === 'nter' && refresh()}
+            onKeyDown={(e) => e.key === 'Enter' && refresh()}
             placeholder="搜索实体（回车聚焦其邻域）…"
             className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />

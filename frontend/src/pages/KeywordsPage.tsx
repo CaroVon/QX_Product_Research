@@ -192,7 +192,7 @@ export function KeywordsPage() {
                       <div className="mb-3 flex items-center justify-between">
                         <span
                           className={cn(
-                            'border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em]',
+                            'rounded-sm border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em]',
                             COLOR_MAP[g.key],
                           )}
                         >
@@ -207,10 +207,7 @@ export function KeywordsPage() {
                           {words.map((word, i) => (
                             <span
                               key={`${g.key}-${i}-${word}`}
-                              className={cn(
-                                'border px-2.5 py-1 font-mono text-[12px]',
-                                COLOR_MAP[g.key],
-                              )}
+                              className="rounded-full border border-white/15 bg-white/10 px-2.5 py-1 font-mono text-[12px] text-white"
                             >
                               {word}
                             </span>

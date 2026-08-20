@@ -32,32 +32,32 @@ interface NavItem {
 
 const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
-    label: 'WORKBENCH',
-    items: [{ to: '/workspace', label: 'Product Workspace', icon: LayoutDashboard }],
+    label: '工作台',
+    items: [{ to: '/workspace', label: '产品工作台', icon: LayoutDashboard }],
   },
   {
-    label: 'CREATE',
+    label: '创作',
     items: [
-      { to: '/research', label: 'Research Hub', icon: Telescope },
-      { to: '/prd', label: 'PRD Studio', icon: FileText },
-      { to: '/design', label: 'Design Studio', icon: PenTool },
-      { to: '/presentation', label: 'Presentation', icon: MonitorPlay },
-      { to: '/keywords', label: 'Keywords', icon: Tags },
+      { to: '/research', label: '调研中心', icon: Telescope },
+      { to: '/prd', label: 'PRD 工作室', icon: FileText },
+      { to: '/design', label: '设计工作室', icon: PenTool },
+      { to: '/presentation', label: '演示文稿', icon: MonitorPlay },
+      { to: '/keywords', label: '关键词', icon: Tags },
     ],
   },
   {
-    label: 'LIBRARY',
+    label: '资产库',
     items: [
       { to: '/project-assets', label: '项目资产库', icon: Archive },
-      { to: '/memory', label: 'Memory Graph', icon: Network },
+      { to: '/memory', label: '记忆图谱', icon: Network },
       { to: '/ppt-assets', label: 'PPT 资产库', icon: MonitorPlay },
-      { to: '/knowledge', label: 'Knowledge Base', icon: Database },
-      { to: '/templates', label: 'Templates', icon: LayoutTemplate },
+      { to: '/knowledge', label: '知识库', icon: Database },
+      { to: '/templates', label: '模板', icon: LayoutTemplate },
     ],
   },
   {
-    label: 'SYSTEM',
-    items: [{ to: '/settings', label: 'Settings', icon: Settings }],
+    label: '系统',
+    items: [{ to: '/settings', label: '设置', icon: Settings }],
   },
 ]
 
@@ -99,7 +99,7 @@ export function Sidebar({
         {!collapsed && (
           <div className="flex min-w-0 flex-1 flex-col">
             <span className="font-serif text-[15px] font-semibold tracking-tight text-foreground">
-              QX Product
+              QX 产品
             </span>
             <span className="text-[11px] text-muted-foreground">AI 产品工作室</span>
           </div>
@@ -118,10 +118,10 @@ export function Sidebar({
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium text-foreground">
-                AI Workspace
+                AI 工作区
               </div>
               <div className="truncate text-[11px] text-muted-foreground">
-                Personal · 01
+                个人工作区 · 01
               </div>
             </div>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />

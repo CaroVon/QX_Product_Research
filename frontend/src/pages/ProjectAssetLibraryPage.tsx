@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Archive,
   ChevronDown,
+  Database,
   Download,
   FileImage,
   FileText,
@@ -42,6 +43,7 @@ const FILE_ICONS: Record<string, typeof FileText> = {
   presentation: FileType,
   keywords: Tags,
   image: FileImage,
+  data: Database,
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -50,6 +52,7 @@ const KIND_LABELS: Record<string, string> = {
   presentation: '幻灯片',
   keywords: '关键词',
   image: '图片',
+  data: '数据',
 }
 
 function formatSize(bytes?: number): string {
@@ -325,29 +328,60 @@ function LibraryDetail({
         {detail.files.map((file, i) => (
           <div
             key={`${file.url}-${i}`}
-            className="group flex items-center gap-3 rounded-lg border border-border bg-background/50 p-3 transition-all hover:border-primary/40 hover:shadow-elev-xs"
+            className="group overflow-hidden rounded-lg border border-border bg-background/50 transition-all hover:border-primary/40 hover:shadow-elev-xs"
           >
-            <div className="flex h-10 w-12 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/40 text-muted-foreground">
-              {(() => {
-                const Icon = FILE_ICONS[file.kind] ?? FileText
-                return <Icon className="h-4 w-4" />
-              })()}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] font-medium text-foreground">{file.name}</div>
-              <div className="font-mono text-[10px] uppercase text-muted-foreground">
-                {KIND_LABELS[file.kind] ?? file.kind} · {formatSize(file.size)}
+            {/* 预览缩略图（矩阵图/章节图/设计图等，有 preview_url 即渲染） */}
+            {file.preview_url && (
+              <button
+                type="button"
+                onClick={() =>
+                  downloadFile(file.url, file.name).catch(() => {})
+                }
+                className="block w-full"
+                title={`预览/下载 ${file.name}`}
+              >
+                <div className="aspect-video w-full overflow-hidden border-b border-border bg-secondary/30">
+                  <img
+                    src={file.preview_url}
+                    alt={file.name}
+                    loading="lazy"
+                    className="h-full w-full object-contain"
+                    onError={(e) => {
+                      ;(e.target as HTMLImageElement).parentElement!.style.display =
+                        'none'
+                    }}
+                  />
+                </div>
+              </button>
+            )}
+            <div className="flex items-center gap-3 p-3">
+              <div className="flex h-10 w-12 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/40 text-muted-foreground">
+                {(() => {
+                  const Icon = FILE_ICONS[file.kind] ?? FileText
+                  return <Icon className="h-4 w-4" />
+                })()}
               </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-medium text-foreground">
+                  {file.name}
+                </div>
+                <div className="font-mono text-[10px] uppercase text-muted-foreground">
+                  {KIND_LABELS[file.kind] ?? file.kind} · {formatSize(file.size)}
+                  {file.preview_urls && file.preview_urls.length > 0
+                    ? ` · ${file.preview_urls.length} 页预览`
+                    : ''}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => downloadFile(file.url, file.name).catch(() => {})}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                aria-label={`下载 ${file.name}`}
+                title="下载"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => downloadFile(file.url, file.name).catch(() => {})}
-              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-              aria-label={`下载 ${file.name}`}
-              title="下载"
-            >
-              <Download className="h-3.5 w-3.5" />
-            </button>
           </div>
         ))}
       </div>

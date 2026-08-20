@@ -84,6 +84,8 @@
   html {
     color-scheme: dark;
     scroll-behavior: smooth;
+    /* 适度放大全局字体（16px → 17px，rem 体系等比缩放 ~6%） */
+    font-size: 17px;
   }
   body {
     @apply bg-background text-foreground antialiased;

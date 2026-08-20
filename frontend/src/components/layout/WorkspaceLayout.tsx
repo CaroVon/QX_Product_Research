@@ -43,7 +43,8 @@ export function WorkspaceLayout() {
         )}
       >
         <Header />
-        <div className="mx-auto max-w-7xl px-6 py-8 lg:px-10 lg:py-10">
+        {/* 内容区：贴侧边栏全宽布局，左/右留白约 1.5cm（56px），不再居中限宽 */}
+        <div className="w-full px-6 py-8 lg:px-14 lg:py-10">
           <PageTransition>
             <Outlet />
           </PageTransition>

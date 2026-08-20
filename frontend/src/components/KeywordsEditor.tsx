@@ -147,7 +147,7 @@ export function KeywordsEditor({
                   <div className="flex items-center gap-2">
                     <span
                       className={cn(
-                        'border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em]',
+                        'rounded-sm border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em]',
                         COLOR_MAP[g.key],
                       )}
                     >
@@ -172,10 +172,7 @@ export function KeywordsEditor({
                   draft[g.key].map((word, i) => (
                     <span
                       key={`${g.key}-${i}-${word}`}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 border px-2.5 py-1 font-mono text-[12px]',
-                        COLOR_MAP[g.key],
-                      )}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 font-mono text-[12px] text-white"
                     >
                       {word}
                       <button

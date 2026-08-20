@@ -29,7 +29,8 @@ export function IdeaInput({
         你的 AI 产品团队（研究 / 产品 / 设计 / 演示）将围绕这个想法展开完整工作流。
       </p>
 
-      <div className="mt-8 flex w-full max-w-2xl gap-3">
+      {/* 输入行：与卡片同宽（不再限宽） */}
+      <div className="mt-8 flex w-full gap-3">
         <input
           type="text"
           value={value}

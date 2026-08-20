@@ -825,6 +825,42 @@ class ProjectRepo:
             ).all()
             return len({row[0] for row in rows})
 
+    def count_entity_across_all_tasks(
+        self, name: str,
+        exclude_project: str | None = None,
+        exclude_product: str | None = None,
+    ) -> int:
+        """同名实体出现的不同任务总数（research 项目 + Studio 任务合并计数）。
+
+        全局提升的双通道合并口径：此前 research 与 Studio 互不计数，单一
+        通道任务永不满足 ≥2 复现条件 → 全局记忆永远为空（实测根因）。
+        """
+        with Session(self._engine) as session:
+            stmt = select(
+                MemoryEntity.project_id, MemoryEntity.studio_product_id,
+            ).where(
+                MemoryEntity.scope == "project",
+                MemoryEntity.name == name,
+            )
+            if exclude_project:
+                stmt = stmt.where(
+                    (MemoryEntity.project_id != uuid.UUID(exclude_project))
+                    | MemoryEntity.project_id.is_(None),
+                )
+            if exclude_product:
+                stmt = stmt.where(
+                    (MemoryEntity.studio_product_id != uuid.UUID(exclude_product))
+                    | MemoryEntity.studio_product_id.is_(None),
+                )
+            rows = session.execute(stmt).all()
+            tasks: set = set()
+            for project_id, studio_product_id in rows:
+                if project_id is not None:
+                    tasks.add(("p", project_id))
+                if studio_product_id is not None:
+                    tasks.add(("s", studio_product_id))
+            return len(tasks)
+
     def search_entities_by_keyword(
         self, query: str, scope: str = "project",
         project_id: str | None = None, limit: int = 5,

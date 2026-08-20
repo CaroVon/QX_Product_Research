@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { Loader2, ShieldAlert, Trash2, X } from 'lucide-react'
+import { Globe2, Loader2, ShieldAlert, Trash2, X } from 'lucide-react'
 import { memoryApi } from '@/lib/api'
 import type { MemoryEntityDetail, MemoryEntityType } from '@/types/api'
 
@@ -28,10 +28,14 @@ export function GraphSidebar({ entityId, onClose, onDeleted }: GraphSidebarProps
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [promoting, setPromoting] = useState(false)
+  const [promoted, setPromoted] = useState(false)
 
   const load = useCallback(async (id: string) => {
     setLoading(true)
     setError('')
+    setConfirmDelete(false)
+    setPromoted(false)
     try {
       setEntity(await memoryApi.entity(id))
     } catch (e) {
@@ -48,16 +52,31 @@ export function GraphSidebar({ entityId, onClose, onDeleted }: GraphSidebarProps
   }, [entityId, load])
 
   const handleDelete = async () => {
-    if (!entity || !confirmDelete) {
+    if (!entity) return
+    if (!confirmDelete) {
       setConfirmDelete(true)
       return
     }
     try {
-      // backend 不一定有 delete 端点，做 best-effort
+      await memoryApi.deleteEntity(entity.id)
       onDeleted?.(entity.id)
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : '删除失败')
+    }
+  }
+
+  const handlePromote = async () => {
+    if (!entity || promoting || promoted) return
+    setPromoting(true)
+    try {
+      await memoryApi.promoteEntity(entity.id)
+      setPromoted(true)
+      await load(entity.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '提升失败')
+    } finally {
+      setPromoting(false)
     }
   }
 
@@ -118,16 +137,19 @@ export function GraphSidebar({ entityId, onClose, onDeleted }: GraphSidebarProps
               ) : (
                 <ul className="space-y-1.5">
                   {entity.relations.map((rel, i) => (
-                    <li key={`${rel.target}-${i}`} className="rounded-md border border-border bg-background/50 px-3 py-2">
+                    <li
+                      key={`${rel.relation_id ?? rel.other?.id ?? i}-${i}`}
+                      className="rounded-md border border-border bg-background/50 px-3 py-2"
+                    >
                       <div className="flex items-center gap-1.5 text-xs">
-                        <span className="font-medium text-foreground">
-                          {rel.target_name ?? rel.target}
-                        </span>
                         <span className="text-muted-foreground">
-                          {rel.direction === 'out' ? '→' : '←'}
+                          {rel.direction === 'in' ? '←' : '→'}
+                        </span>
+                        <span className="font-medium text-foreground">
+                          {rel.other?.name ?? rel.other?.id ?? '（未知实体）'}
                         </span>
                         <span className="rounded bg-secondary px-1.5 py-0.5">
-                          {rel.type}
+                          {rel.relation}
                         </span>
                       </div>
                     </li>
@@ -135,6 +157,28 @@ export function GraphSidebar({ entityId, onClose, onDeleted }: GraphSidebarProps
                 </ul>
               )}
             </div>
+
+            {/* 提升到全局（项目实体专属；全局提升双通道计数之外的手动入口） */}
+            {entity.scope === 'project' && (
+              <div className="border-t border-border pt-3">
+                <button
+                  type="button"
+                  onClick={handlePromote}
+                  disabled={promoting || promoted}
+                  className="flex items-center gap-1.5 text-xs text-primary transition-colors hover:text-primary/80 disabled:opacity-60"
+                >
+                  {promoting ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Globe2 className="h-3 w-3" />
+                  )}
+                  {promoted ? '已提升到全局记忆' : '提升到全局记忆'}
+                </button>
+                <p className="mt-1 text-[10px] text-muted-foreground/70">
+                  提升后跨项目可见，用于沉淀跨任务通用知识
+                </p>
+              </div>
+            )}
 
             <div className="border-t border-border pt-3">
               {confirmDelete ? (
