@@ -559,6 +559,25 @@ export const productApi = {
     return request(`/product/${productId}/logs`)
   },
 
+  async pause(productId: string): Promise<{ status: string }> {
+    return request(`/product/${productId}/pause`, { method: 'POST' })
+  },
+
+  async resume(productId: string): Promise<{ status: string }> {
+    return request(`/product/${productId}/resume`, { method: 'POST' })
+  },
+
+  async cancel(productId: string): Promise<{ status: string }> {
+    return request(`/product/${productId}/cancel`, { method: 'POST' })
+  },
+
+  async suggest(idea: string): Promise<{ suggestions: string[] }> {
+    return request<{ suggestions: string[] }>(`/product/suggest`, {
+      method: 'POST',
+      body: JSON.stringify({ idea }),
+    })
+  },
+
   /** 导出演示为 PPT 风格 PDF（Slide JSON → Renderer → WeasyPrint） */
   exportPdf(productId: string): Promise<ExportPdfResponse> {
     return request(`/product/${productId}/export-pdf`, {
@@ -588,6 +607,17 @@ export const productApi = {
     return request(`/product/${productId}/presentation`, {
       method: 'PATCH',
       body: JSON.stringify({ presentation }),
+    })
+  },
+
+  /** 更新关键词组（设计 / 功能 / 外观 / 人群 / 场景） */
+  async updateKeywords(
+    productId: string,
+    keywords: Record<string, string[]>,
+  ): Promise<{ product_id: string; keywords: Record<string, string[]>; updated: boolean }> {
+    return request(`/product/${productId}/keywords`, {
+      method: 'PUT',
+      body: JSON.stringify({ keywords }),
     })
   },
 
@@ -781,5 +811,107 @@ export const editorApi = {
       throw new ApiError(res.status, detail)
     }
     return res
+  },
+}
+
+// ─── Memory Graph API ──────────────────────────────────────────────
+
+export interface MemoryGraphRequest {
+  scope: 'global' | 'project'
+  projectId?: string
+  studioProductId?: string
+  q?: string
+  entityTypes?: string[]
+}
+
+export const memoryApi = {
+  async graph(params: MemoryGraphRequest): Promise<import('@/types/api').MemoryGraphResponse> {
+    const search = new URLSearchParams()
+    search.set('scope', params.scope)
+    if (params.projectId) search.set('project_id', params.projectId)
+    if (params.studioProductId) search.set('studio_product_id', params.studioProductId)
+    if (params.q) search.set('q', params.q)
+    if (params.entityTypes?.length)
+      params.entityTypes.forEach((t) => search.append('entity_types', t))
+    return request(`/memory/graph?${search.toString()}`)
+  },
+
+  async entity(id: string): Promise<import('@/types/api').MemoryEntityDetail> {
+    return request(`/memory/entity/${encodeURIComponent(id)}`)
+  },
+
+  async insights(params: { scope: 'global' | 'project'; projectId?: string; studioProductId?: string }) {
+    const search = new URLSearchParams()
+    search.set('scope', params.scope)
+    if (params.projectId) search.set('project_id', params.projectId)
+    if (params.studioProductId) search.set('studio_product_id', params.studioProductId)
+    return request<import('@/types/api').MemoryInsightsResponse>(
+      `/memory/insights?${search.toString()}`,
+    )
+  },
+
+  async rebuild(projectId: string): Promise<{ status: string }> {
+    return request(`/memory/rebuild/${encodeURIComponent(projectId)}`, {
+      method: 'POST',
+    })
+  },
+}
+
+// ─── 项目资产库 API ──────────────────────────────────────
+
+export interface ProjectAssetFile {
+  kind: 'doc' | 'ppt' | 'presentation' | 'keywords' | 'image'
+  name: string
+  size: number
+  url: string
+  category?: string
+  preview_url?: string | null
+  preview_urls?: string[]
+}
+
+export interface ProjectAssetSummary {
+  product_id: string
+  idea: string
+  status: string
+  updated_at: string | null
+  file_count: number
+  total_size: number
+  doc_count: number
+  ppt_count: number
+  presentation_count: number
+  keywords_count: number
+  image_count: number
+  has_pptx: boolean
+  has_presentation: boolean
+  has_keywords: boolean
+  svg_previews: string[]
+}
+
+export interface ProjectAssetLibrary {
+  product_id: string
+  idea: string
+  status: string
+  updated_at: string | null
+  files: ProjectAssetFile[]
+  total_size: number
+  generated_at?: string | null
+}
+
+export const projectAssetsApi = {
+  /** 任务资产库列表（每个任务的资产统计） */
+  async list(): Promise<ProjectAssetSummary[]> {
+    return request<ProjectAssetSummary[]>('/project-assets')
+  },
+
+  /** 单个任务资产库明细（含全部文件清单） */
+  async get(productId: string): Promise<ProjectAssetLibrary> {
+    return request<ProjectAssetLibrary>(
+      `/project-assets/${encodeURIComponent(productId)}`,
+    )
+  },
+
+  /** ZIP 打包下载 */
+  async downloadUrl(productId: string): Promise<string> {
+    return `${API_BASE}/project-assets/${encodeURIComponent(productId)}/download`
   },
 }

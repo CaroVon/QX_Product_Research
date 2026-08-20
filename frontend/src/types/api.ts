@@ -468,3 +468,70 @@ export interface DomainExperienceListResponse {
   total: number
   experiences: DomainExperience[]
 }
+
+// ─── Memory Graph (v2 Studio) ─────────────────────────────────
+
+export type MemoryEntityType =
+  | 'company'
+  | 'product'
+  | 'technology'
+  | 'person'
+  | 'market'
+  | 'metric'
+  | 'other'
+
+export interface MemoryGraphNode {
+  id: string
+  name: string
+  type: MemoryEntityType
+  scope: 'global' | 'project'
+  degree: number
+  confidence: number
+  summary?: string
+  aliases: string[]
+  focused?: boolean
+  last_seen_at?: string | null
+}
+
+export interface MemoryGraphEdge {
+  source: string
+  target: string
+  relation: string
+  weight: number
+  expired?: boolean
+}
+
+export interface MemoryGraphResponse {
+  nodes: MemoryGraphNode[]
+  edges: MemoryGraphEdge[]
+  query?: string
+  meta: {
+    entity_count: number
+    relation_count: number
+    projects_covered: number
+    studio_products_covered?: number
+    truncated?: boolean
+  }
+}
+
+export interface MemoryEntityDetail {
+  id: string
+  name: string
+  type: MemoryEntityType
+  scope: 'global' | 'project'
+  summary?: string
+  aliases?: string[]
+  relations?: Array<{
+    type: string
+    target: string
+    target_name?: string
+    target_type?: MemoryEntityType
+    weight?: number
+    direction?: 'out' | 'in'
+  }>
+  sources?: Array<{ url?: string; title?: string }>
+}
+
+export interface MemoryInsightsResponse {
+  insights: Array<{ id: string; content: string; source: string }>
+}

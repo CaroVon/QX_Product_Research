@@ -6,7 +6,25 @@
  * ============================================================
  */
 
-export type StudioStatus = 'queued' | 'running' | 'completed' | 'failed' | 'waiting_approval'
+export type StudioStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'waiting_approval'
+
+export type KeywordGroups = Record<string, string[]>
+
+export type SuggestionResponse = {
+  suggestions: string[]
+}
+
+export type ClarifyRequest = {
+  idea: string
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  max_rounds?: number
+}
 
 export interface StudioProductCreateResponse {
   product_id: string
@@ -185,6 +203,10 @@ export interface StudioProduct {
   error_message?: string | null
   created_at?: string | null
   updated_at?: string | null
+  keywords?: KeywordGroups | null
+  node_status?: Record<string, string>
+  node_models?: Record<string, string>
+  errors?: Record<string, string>
   requirement?: Record<string, unknown> | null
   research?: MarketResearch | null
   competitor_analysis?: CompetitorAnalysis | null
@@ -210,9 +232,6 @@ export interface StudioProduct {
   } | null
   critic_score?: number | null
   gate_report?: QualityGateReport | null
-  node_status: Record<string, string>
-  node_models?: Record<string, string>
-  errors: Record<string, string>
 }
 
 export interface ExportPdfResponse {

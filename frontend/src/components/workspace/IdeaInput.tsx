@@ -22,7 +22,7 @@ export function IdeaInput({
         <Sparkles className="h-5 w-5 text-[#24415E]" />
       </div>
 
-      <h1 className="font-editorial max-w-2xl text-3xl font-semibold leading-snug tracking-tight lg:text-4xl">
+      <h1 className="font-serif max-w-2xl text-3xl font-semibold leading-snug tracking-tight lg:text-4xl">
         Describe the product you want to build
       </h1>
       <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground">

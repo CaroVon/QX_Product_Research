@@ -38,16 +38,21 @@ class ProductAssetResponse(BaseModel):
     # ── 六节点结构化资产（未完成时为 None） ──
     requirement: dict[str, Any] | None = None
     research: dict[str, Any] | None = None
+    competitor_matrix: dict[str, Any] | None = None
     competitor_analysis: dict[str, Any] | None = None
     strategy: dict[str, Any] | None = None
     design: dict[str, Any] | None = None
     presentation: dict[str, Any] | None = None
     ppt_design: dict[str, Any] | None = None
     document: dict[str, Any] | None = None
+    # ── Key Words：任务完成时按「设计/功能/外观/人群/场景」总结，用户可编辑 ──
+    keywords: dict[str, list[str]] | None = None
     node_models: dict[str, str] | None = None
     # ── P5: 质量层 ──
     critic_score: int | None = None
     gate_report: dict[str, Any] | None = None
+    # ── C5: 各节点模型 token 用量（成本可观测） ──
+    usage: dict[str, Any] | None = None
     # ── 进度与失败记录 ──
     node_status: dict[str, str] = Field(default_factory=dict)
     errors: dict[str, str] = Field(default_factory=dict)
@@ -60,6 +65,21 @@ class ProductListResponse(BaseModel):
     idea: str
     status: str
     created_at: str | None = None
+    keywords: dict[str, list[str]] | None = None
+
+
+class ProductKeywordsUpdateRequest(BaseModel):
+    """关键词组编辑请求（整体替换；组键固定为 design/function/appearance/audience/scenario）。"""
+
+    keywords: dict[str, list[str]] = Field(..., description="方面 → 关键词列表")
+
+
+class ProductKeywordsUpdateResponse(BaseModel):
+    """关键词组保存结果。"""
+
+    product_id: str
+    keywords: dict[str, list[str]]
+    updated: bool = True
 
 
 class ExportPdfResponse(BaseModel):

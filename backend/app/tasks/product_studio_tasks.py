@@ -152,6 +152,26 @@ def _update_product(product_id: str, **fields) -> None:
         session.commit()
 
 
+def _get_product_status(product_id: str) -> StudioProductStatus | None:
+    """读取最新状态，避免用户暂停/结束后旧 Worker 覆盖终态。"""
+    from sqlalchemy.orm import Session
+
+    with Session(get_sync_engine()) as session:
+        product = session.get(StudioProduct, _parse_product_id(product_id))
+        return product.status if product is not None else None
+
+
+def _json_safe(value):
+    """递归转换资产包中的非 JSON 类型，保持集合内容而非转成不可读字符串。"""
+    if isinstance(value, (set, frozenset)):
+        return sorted((_json_safe(item) for item in value), key=lambda item: repr(item))
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _claim_product_run(product_id: str, *, allow_retry: bool) -> tuple[str, str | None]:
     """原子领取一次流水线执行，阻止 Celery 重投递并发跑同一产品。
 
@@ -169,6 +189,8 @@ def _claim_product_run(product_id: str, *, allow_retry: bool) -> tuple[str, str 
             return "completed", None
         if product.status == StudioProductStatus.RUNNING:
             return "running", None
+        if product.status == StudioProductStatus.PAUSED:
+            return "paused", None
 
         allowed = [StudioProductStatus.QUEUED, StudioProductStatus.WAITING_APPROVAL]
         if allow_retry:
@@ -217,6 +239,9 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
     if action == "running":
         logger.info("[Product Studio] product=%s 已在执行，忽略重复投递", product_id)
         return {"product_id": product_id, "status": "running", "duplicate": True}
+    if action == "paused":
+        logger.info("[Product Studio] product=%s 已暂停，忽略重复投递", product_id)
+        return {"product_id": product_id, "status": "paused", "duplicate": True}
 
     settings = self.settings
     _bridge_env(settings)
@@ -303,12 +328,13 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         node_models = {
             "requirement_parser": loop.llm.model,
             "research": loops["research"].llm.model,
+            "competitor_matrix": loops["research"].llm.model,
             "competitor_analysis": loops["research"].llm.model,
             "strategy": loops["strategy"].llm.model,
             "design": loops["design"].llm.model,
             "presentation": loops["presentation"].llm.model,
             "critic": loops["critic"].llm.model,
-            "ppt_design": getattr(loop.llm, "model", "deterministic"),
+            "ppt_design": getattr(loops["presentation"].llm, "model", "deterministic"),
         }
 
         graph = ProductResearchGraph(
@@ -347,7 +373,7 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
             _p = _session.get(SP, _parse_product_id(product_id))
             _saved = json.loads(_p.asset_package or "{}") if _p and _p.asset_package else {}
             if _saved.get("_resume"):
-                for key in ("requirement", "research", "competitor_analysis", "strategy",
+                for key in ("requirement", "research", "competitor_matrix", "competitor_analysis", "strategy",
                             "design", "presentation", "node_status", "_completed_nodes",
                             "_gate_passed", "critic_score", "revision_count",
                             "_sources_review", "source_gathering_meta"):
@@ -394,6 +420,10 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         logger.warning("[Product Studio] product=%s 软超时（仍执行中，等待硬超时兜底）", product_id)
         return {"product_id": product_id, "status": "running", "note": "soft_timeout"}
     except Exception as exc:  # noqa: BLE001 —— 记录失败，允许 Celery 重试
+        current_status = _get_product_status(product_id)
+        if current_status in (StudioProductStatus.PAUSED, StudioProductStatus.FAILED):
+            logger.info("[Product Studio] product=%s 已被用户终止，忽略旧任务异常", product_id)
+            return {"product_id": product_id, "status": current_status.value}
         logger.exception("[Product Studio] product=%s 流水线失败", product_id)
         _update_product(
             product_id,
@@ -415,14 +445,44 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         except Exception:  # noqa: BLE001
             continue
 
-    package_dict = package.model_dump()
+    package_dict = _json_safe(package.model_dump())
     package_dict["usage"] = usage
+    current_status = _get_product_status(product_id)
+    if current_status in (StudioProductStatus.PAUSED, StudioProductStatus.FAILED):
+        logger.info("[Product Studio] product=%s 已被用户终止，不覆盖产品状态", product_id)
+        return {"product_id": product_id, "status": current_status.value}
+
     _update_product(
         product_id,
         status=StudioProductStatus.COMPLETED,
-        asset_package=json.dumps(package_dict, ensure_ascii=False),
+        # default=str 兜底：防御个别非 JSON 原生类型（如 set）导致整体失败
+        asset_package=json.dumps(package_dict, ensure_ascii=False, default=str),
         error_message=None,
     )
+    # ── Key Words：任务完成后基于资产包文本总结「设计/功能/外观/人群/场景」关键词 ──
+    # 失败不阻断完成；已有关键词（含用户编辑）时自动跳过，不会覆盖。
+    try:
+        from app.services.product_keywords import generate_and_save_keywords
+
+        package_dict["keywords"] = generate_and_save_keywords(
+            product_id, package_dict, llm=loop.llm,
+        )
+    except Exception as exc:  # noqa: BLE001 —— 关键词生成失败不影响流水线完成
+        logger.warning("[Product Keywords] 生成失败 | product=%s | %s", product_id, exc)
+    # ── Knowledge + Memory：Studio 任务完成后写入任务知识库与记忆图 ──
+    # 两者均为增强能力，失败不回滚主资产；所有记录通过 studio_product_id 关联。
+    try:
+        from app.rag.studio_knowledge import sync_studio_knowledge
+
+        sync_studio_knowledge(product_id, package_dict, idea=idea)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Studio Knowledge] 同步失败 | product=%s | %s", product_id, exc)
+    try:
+        from app.rag.studio_memory import extract_memory_from_studio_product
+
+        extract_memory_from_studio_product(product_id, package_dict, llm=loop.llm)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Studio Memory] 同步失败 | product=%s | %s", product_id, exc)
     # ── Design Studio v2：任务完成后把生图（设计思路 + 图片）导入资产库 ──
     try:
         from app.services.design_studio import import_from_product_package
@@ -430,6 +490,13 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         import_from_product_package(product_id, package_dict)
     except Exception as exc:  # noqa: BLE001 —— 资产库导入失败不阻断流水线完成
         logger.warning("[Design Studio] 完成态导入失败 | product=%s | %s", product_id, exc)
+    # ── 项目资产库：任务完成后把文本资产转化为 md/pdf 产出到任务资产库 ──
+    try:
+        from app.services.project_assets import ensure_text_assets
+
+        ensure_text_assets(str(product_id), package_dict)
+    except Exception as exc:  # noqa: BLE001 —— 文本资产产出失败不阻断流水线完成
+        logger.warning("[Project Assets] 完成态文本资产产出失败 | product=%s | %s", product_id, exc)
     failed_nodes = package.meta.errors
     logger.info(
         "[Product Studio] product=%s 完成 | 失败节点=%s",

@@ -21,7 +21,7 @@ export function ProjectHeader({ product }: { product: StudioProduct | null }) {
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div className="min-w-0">
         <div className="flex items-center gap-3">
-          <h2 className="font-editorial truncate text-2xl font-semibold tracking-tight">
+          <h2 className="font-serif truncate text-2xl font-semibold tracking-tight">
             {product.idea}
           </h2>
           <span className={cn('shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium', meta.cls)}>
