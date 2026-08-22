@@ -138,11 +138,24 @@ def _persist_progress(product_id: str, event: dict) -> None:
         completed > running > queued > failed
     同一节点只有更高优先级的后续事件才允许覆盖写库；
     failed 只作为「最低优先级的占位」，一旦节点随后 running/completed 即被替换。
+
+    渐进式交付（P4）：事件携带 artifact_key/artifact 时，即时渲染该节点
+    文本资产到 studio_assets/{id}/（前端资产面板节点完成即可预览/下载）；
+    artifact 本体不写入 progress_log（保持日志轻量）。
     """
     node = event.get("node", "")
     status = event.get("status", "")
     if not node or not status:
         return
+    artifact_key = event.get("artifact_key")
+    if artifact_key and event.get("artifact") is not None:
+        try:
+            from app.services.project_assets import ensure_text_assets
+
+            ensure_text_assets(str(product_id), {str(artifact_key): event["artifact"]})
+        except Exception as exc:  # noqa: BLE001 —— 渐进交付失败不影响主流程（完成态会补齐）
+            logger.warning("[Product Studio] 渐进资产产出失败 %s.%s: %s",
+                           product_id, artifact_key, exc)
     _RANK = {"completed": 3, "running": 2, "queued": 1, "failed": 0}
     prev = _PROGRESS_SNAPSHOT.get(product_id, {}).get(node)
     if prev is not None and _RANK.get(status, 0) < _RANK.get(prev, 0):
@@ -381,7 +394,8 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
             design_agent=DesignAgent(loop=loops["design"]),
             presentation_agent=PresentationAgent(loop=loops["presentation"], memory=memory),
             critic_agent=CriticAgent(llm=loops["critic"].llm),
-            ppt_design_agent=PptDesignAgent(),
+            ppt_design_agent=PptDesignAgent(
+                progress_callback=lambda event: _persist_progress(product_id, event)),
             llm=loop.llm,
             memory=memory,
             node_models=node_models,
@@ -403,15 +417,23 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         if settings.SOURCE_REVIEW and "source_gathering" not in gate_nodes:
             gate_nodes.insert(0, "source_gathering")
         extra_initial: dict = {"product_id": str(product_id), "_gate_nodes": gate_nodes}
-        # MOD 数据源覆盖（MOD_SOURCE=mock 供 0-credit 预演/测试；缺省 rainforest）
-        if os.environ.get("MOD_SOURCE"):
-            extra_initial["source"] = os.environ["MOD_SOURCE"]
-        # MOD 抓取量覆盖（缺省 20：search 1 + product 20 ≈ 21 credits）
-        if os.environ.get("MOD_TOP_N"):
-            try:
-                extra_initial["top_n"] = int(os.environ["MOD_TOP_N"])
-            except ValueError:
-                pass
+        # MOD 数据源/抓取量覆盖（MOD_SOURCE=mock 供 0-credit 预演/测试；缺省 rainforest）。
+        # 仅 QX_ENV=e2e 时生效：E2E worker 与生产任务共用队列时，防止 mock 夹具
+        # 污染真实交付（mock 夹具为固定 wireless mouse 数据，与任务品类无关）。
+        _e2e = os.environ.get("QX_ENV", "").strip().lower() == "e2e"
+        if _e2e:
+            if os.environ.get("MOD_SOURCE"):
+                extra_initial["source"] = os.environ["MOD_SOURCE"]
+            # MOD 抓取量覆盖（缺省 20：search 1 + product 20 ≈ 21 credits）
+            if os.environ.get("MOD_TOP_N"):
+                try:
+                    extra_initial["top_n"] = int(os.environ["MOD_TOP_N"])
+                except ValueError:
+                    pass
+        elif os.environ.get("MOD_SOURCE"):
+            logger.warning(
+                "[Product Studio] 忽略 MOD_SOURCE=%s（仅 QX_ENV=e2e 时生效，"
+                "防止 mock 数据污染生产任务）", os.environ["MOD_SOURCE"])
         # 读取产品记录判断是否从等待批准状态恢复
         from app.core.celery_db import get_sync_engine
         from sqlalchemy.orm import Session
@@ -428,7 +450,8 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
                 for key in ("requirement", "research", "competitor_matrix", "competitor_analysis", "strategy",
                             "design", "presentation", "node_status", "_completed_nodes",
                             "_gate_passed", "critic_score", "revision_count",
-                            "_sources_review", "source_gathering_meta"):
+                            "_sources_review", "source_gathering_meta",
+                            "amazon_collection", "mod_keyword"):
                     if key in _saved:
                         extra_initial[key] = _saved[key]
                 extra_initial["idea"] = _saved.get("idea") or idea
@@ -457,6 +480,9 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
             # 资料审核：待审核/已审核资料必须持久化（供前端审核界面 + 续跑使用）
             "_sources_review": snapshot.get("_sources_review", []),
             "source_gathering_meta": snapshot.get("source_gathering_meta", {}),
+            # 统一采集层：亚马逊数据摘要必须持久化（gate 展示 + 矩阵节点 0-credit 回放）
+            "amazon_collection": snapshot.get("amazon_collection"),
+            "mod_keyword": snapshot.get("mod_keyword", ""),
         }
         _update_product(
             product_id,
@@ -511,44 +537,49 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         asset_package=json.dumps(package_dict, ensure_ascii=False, default=str),
         error_message=None,
     )
-    # ── Key Words：任务完成后基于资产包文本总结「设计/功能/外观/人群/场景」关键词 ──
-    # 失败不阻断完成；已有关键词（含用户编辑）时自动跳过，不会覆盖。
-    try:
+    # ── 完成态后处理（耗时优化：五段互不依赖，并行执行） ──
+    # keywords 结果回写主线程赋值；其余四段只读 package_dict，各自降级语义保持
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _post_keywords():
         from app.services.product_keywords import generate_and_save_keywords
 
-        package_dict["keywords"] = generate_and_save_keywords(
-            product_id, package_dict, llm=loop.llm,
-        )
-    except Exception as exc:  # noqa: BLE001 —— 关键词生成失败不影响流水线完成
-        logger.warning("[Product Keywords] 生成失败 | product=%s | %s", product_id, exc)
-    # ── Knowledge + Memory：Studio 任务完成后写入任务知识库与记忆图 ──
-    # 两者均为增强能力，失败不回滚主资产；所有记录通过 studio_product_id 关联。
-    try:
+        return generate_and_save_keywords(product_id, package_dict, llm=loop.llm)
+
+    def _post_knowledge():
         from app.rag.studio_knowledge import sync_studio_knowledge
 
         sync_studio_knowledge(product_id, package_dict, idea=idea)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Studio Knowledge] 同步失败 | product=%s | %s", product_id, exc)
-    try:
+
+    def _post_memory():
         from app.rag.studio_memory import extract_memory_from_studio_product
 
         extract_memory_from_studio_product(product_id, package_dict, llm=loop.llm)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Studio Memory] 同步失败 | product=%s | %s", product_id, exc)
-    # ── Design Studio v2：任务完成后把生图（设计思路 + 图片）导入资产库 ──
-    try:
+
+    def _post_design_studio():
         from app.services.design_studio import import_from_product_package
 
         import_from_product_package(product_id, package_dict)
-    except Exception as exc:  # noqa: BLE001 —— 资产库导入失败不阻断流水线完成
-        logger.warning("[Design Studio] 完成态导入失败 | product=%s | %s", product_id, exc)
-    # ── 项目资产库：任务完成后把文本资产转化为 md/pdf 产出到任务资产库 ──
-    try:
+
+    def _post_text_assets():
         from app.services.project_assets import ensure_text_assets
 
         ensure_text_assets(str(product_id), package_dict)
-    except Exception as exc:  # noqa: BLE001 —— 文本资产产出失败不阻断流水线完成
-        logger.warning("[Project Assets] 完成态文本资产产出失败 | product=%s | %s", product_id, exc)
+
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="post") as _post_ex:
+        _futures = {
+            "keywords": _post_ex.submit(_post_keywords),
+            "knowledge": _post_ex.submit(_post_knowledge),
+            "memory": _post_ex.submit(_post_memory),
+            "design_studio": _post_ex.submit(_post_design_studio),
+            "text_assets": _post_ex.submit(_post_text_assets),
+        }
+        for _name, _fut in _futures.items():
+            try:
+                if _name == "keywords":
+                    package_dict["keywords"] = _fut.result()
+            except Exception as exc:  # noqa: BLE001 —— 各段失败不阻断完成
+                logger.warning("[Post/%s] 失败 | product=%s | %s", _name, product_id, exc)
     failed_nodes = package.meta.errors
     logger.info(
         "[Product Studio] product=%s 完成 | 失败节点=%s",
