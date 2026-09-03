@@ -26,11 +26,7 @@ celery_app = Celery(
     broker=_broker_url,
     backend=_backend_url,
     include=[
-        "app.tasks.report_workflow",   # 主工作流任务
-        "app.tasks.search_tasks",       # 搜索采集任务
         "app.tasks.knowledge_tasks",    # 知识库构建任务
-        "app.tasks.writing_tasks",      # 章节撰写任务
-        "app.tasks.render_tasks",       # PDF 渲染任务
         "app.tasks.product_studio_tasks",  # AI Product Studio 流水线任务
         "app.tasks.asset_tasks",        # 独立资产生成任务（qx_assets 独立生图）
     ],

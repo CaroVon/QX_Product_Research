@@ -26,7 +26,6 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 
 from app.core.config import get_settings
-from app.models.project import Project, ProjectStatus
 from app.models.studio_product import StudioProduct, StudioProductStatus
 
 logger = logging.getLogger(__name__)
@@ -35,11 +34,6 @@ logger = logging.getLogger(__name__)
 STALE_HOURS_DEFAULT = 3
 INTERVAL_MINUTES_DEFAULT = 15
 
-_RECOVERABLE_PROJECT_STATES = (
-    ProjectStatus.PREPARING_DATA,
-    ProjectStatus.PREPARING_OUTLINE,
-    ProjectStatus.DRAFTING,
-)
 
 
 async def recover_stale_tasks(db) -> int:
@@ -72,24 +66,6 @@ async def recover_stale_tasks(db) -> int:
             )
             recovered += 1
             logger.warning("[watchdog] 回收卡死产品 | id=%s | 最后更新=%s", p.id, ref)
-
-    # ── v1: projects ────────────────────────────────────────────
-    projects = (await db.execute(
-        select(Project).where(Project.status.in_(_RECOVERABLE_PROJECT_STATES))
-    )).scalars().all()
-    for p in projects:
-        ref = p.updated_at or p.created_at
-        if ref is not None and ref.replace(tzinfo=timezone.utc if ref.tzinfo is None else ref.tzinfo) < cutoff:
-            await db.execute(
-                update(Project)
-                .where(Project.id == p.id)
-                .values(
-                    status=ProjectStatus.FAILED,
-                    error_message=f"watchdog: 任务超过 {stale_hours} 小时未完成，已自动回收（请重试）",
-                )
-            )
-            recovered += 1
-            logger.warning("[watchdog] 回收卡死项目 | id=%s | 最后更新=%s", p.id, ref)
 
     if recovered:
         await db.commit()
