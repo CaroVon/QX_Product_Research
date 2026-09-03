@@ -15,6 +15,7 @@ from app.models.memory_entity import MemoryEntity
 from app.models.memory_relation import MemoryRelation
 from app.models.memory_insight import MemoryInsight
 from app.models.studio_product import StudioProduct, StudioProductStatus
+from app.models.qx_asset import QxAsset
 
 __all__ = [
     "Base", "orm_to_dict",
@@ -30,5 +31,6 @@ __all__ = [
     "MemoryRelation",
     "MemoryInsight",
     "StudioProduct", "StudioProductStatus",
+    "QxAsset",
     "User",
 ]

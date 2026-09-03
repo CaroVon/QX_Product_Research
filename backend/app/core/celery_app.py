@@ -32,6 +32,7 @@ celery_app = Celery(
         "app.tasks.writing_tasks",      # 章节撰写任务
         "app.tasks.render_tasks",       # PDF 渲染任务
         "app.tasks.product_studio_tasks",  # AI Product Studio 流水线任务
+        "app.tasks.asset_tasks",        # 独立资产生成任务（qx_assets 独立生图）
     ],
 )
 

@@ -260,7 +260,9 @@ async def create_product(
     if duplicate:
         response.status_code = 200
     else:
-        celery_task = run_product_studio_pipeline.delay(str(product.id))
+        celery_task = run_product_studio_pipeline.delay(
+            str(product.id), auto_approve=body.auto_approve_gates
+        )
         # 持久化任务 ID（供取消/追踪）；失败不阻断创建
         product.celery_task_id = celery_task.id
         await db.commit()
@@ -773,7 +775,7 @@ async def cancel_product(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """取消进行中的产品流水线：撤销 Celery 任务并置为 failed（原因=用户取消）。"""
+    """取消进行中的产品流水线：撤销 Celery 任务并置为 cancelled 终态。"""
     from app.core.celery_ops import revoke_active_tasks_for, revoke_task
 
     product = await db.get(StudioProduct, product_id)
@@ -781,7 +783,11 @@ async def cancel_product(
         raise HTTPException(status_code=404, detail="产品不存在")
     if product.owner_id is not None and product.owner_id != user.id:
         raise HTTPException(status_code=403, detail="无权访问该产品")
-    if product.status in (StudioProductStatus.COMPLETED, StudioProductStatus.FAILED):
+    if product.status in (
+        StudioProductStatus.COMPLETED,
+        StudioProductStatus.FAILED,
+        StudioProductStatus.CANCELLED,
+    ):
         raise HTTPException(
             status_code=409,
             detail=f"产品已处于 {product.status.value} 状态，无法取消",
@@ -790,7 +796,8 @@ async def cancel_product(
     revoke_task(product.celery_task_id)
     revoke_active_tasks_for(str(product.id))
 
-    product.status = StudioProductStatus.FAILED
+    # cancelled 终态与 failed 严格区分：claim 守卫拒绝复活，前端显示灰色「已取消」。
+    product.status = StudioProductStatus.CANCELLED
     product.error_message = "用户取消"
     await db.commit()
     return {"product_id": str(product.id), "status": "cancelled", "message": "产品流水线已取消"}

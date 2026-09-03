@@ -191,15 +191,43 @@ async def download_project_asset_library(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """打包下载任务全部资产（ZIP，按类别分子目录，中文名自动落盘）。"""
+    """打包下载任务全部资产（ZIP，按类别分子目录，中文名自动落盘）。
+
+    体验优化：ZIP 落盘缓存——指纹（product.updated_at + 资产文件集）不变
+    则直接回放缓存字节，跳过 ensure/打包的同步长尾；产物变化自动失效重建。
+    """
+    import hashlib
+    from pathlib import Path
+
+    from app.core.config import get_settings
+
     product = await _get_product(product_id, db, user)
     package = _load_package(product)
-    await asyncio.to_thread(pa.ensure_text_assets, str(product_id), package)
-    data = await asyncio.to_thread(
-        pa.build_task_zip_bytes, str(product_id), package, product.idea,
-    )
+
+    cache_dir = Path(get_settings().OUTPUT_DIR) / "project_assets_zips"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = cache_dir / f"{product_id}.zip"
+    fp_path = cache_dir / f"{product_id}.fingerprint"
+
+    # 只读扫描得到文件集指纹（不触发补写）
+    files = await asyncio.to_thread(pa.collect_files, str(product_id), package, ensure=False)
+    updated = product.updated_at.isoformat() if product.updated_at else ""
+    fingerprint = hashlib.sha1(
+        (updated + "|" + "|".join(f"{f.get('path')}:{f.get('size')}" for f in files)).encode()
+    ).hexdigest()
+
+    data: bytes | None = None
+    if zip_path.is_file() and fp_path.is_file() and fp_path.read_text() == fingerprint:
+        data = zip_path.read_bytes()
     if not data:
-        raise HTTPException(status_code=404, detail="任务暂无资产")
+        await asyncio.to_thread(pa.ensure_text_assets, str(product_id), package)
+        data = await asyncio.to_thread(
+            pa.build_task_zip_bytes, str(product_id), package, product.idea,
+        )
+        if not data:
+            raise HTTPException(status_code=404, detail="任务暂无资产")
+        zip_path.write_bytes(data)
+        fp_path.write_text(fingerprint)
 
     # RFC 5987：filename 用 ASCII 兜底，filename* 用 UTF-8 百分号编码（中文名）
     safe_idea = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", product.idea)[:40] or str(product_id)[:8]

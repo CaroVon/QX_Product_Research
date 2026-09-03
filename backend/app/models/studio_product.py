@@ -25,6 +25,8 @@ class StudioProductStatus(str, enum.Enum):
     FAILED = "failed"
     WAITING_APPROVAL = "waiting_approval"
     PAUSED = "paused"
+    # 用户主动终止的终态：与 failed 严格区分，禁止重试/看门狗复活。
+    CANCELLED = "cancelled"
 
 
 class StudioProduct(Base):

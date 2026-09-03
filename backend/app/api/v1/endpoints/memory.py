@@ -219,6 +219,19 @@ async def rebuild_studio_memory(
     }
 
 
+@router.get("/rebuild-status/{celery_task_id}")
+async def rebuild_task_status(celery_task_id: str, user: User = Depends(get_current_user)):
+    """记忆图重建任务状态（前端轮询到 ready 再刷新图谱，替代盲等 4s）。"""
+    from app.core.celery_app import celery_app
+
+    result = celery_app.AsyncResult(celery_task_id)
+    return {
+        "state": result.state,
+        "ready": result.ready(),
+        "failed": result.failed(),
+    }
+
+
 # ================================================================
 # POST /api/v1/memory/entities/{entity_id}/promote —— 手动提升到全局
 # ================================================================

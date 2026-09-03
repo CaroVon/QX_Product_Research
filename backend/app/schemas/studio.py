@@ -21,6 +21,9 @@ class ProductCreateRequest(BaseModel):
                                  description="设计主题 id（THEME_PRESETS）")
     style_id: str | None = Field(default=None, max_length=64,
                                  description="风格方法论 id（ppt-master styles）")
+    # 自动过门：跳过资料/大纲审批门（透明可回看，供放手式全自动运行）
+    auto_approve_gates: bool = Field(default=False,
+                                     description="自动批准审批门（False=审核模式）")
 
 
 class ProductCreateResponse(BaseModel):

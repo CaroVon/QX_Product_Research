@@ -533,6 +533,7 @@ def _image_gen_env() -> dict:
     settings = get_settings()
     env = os.environ.copy()
     env.setdefault("IMAGE_BACKEND", "minimax")
+    env.setdefault("IMAGE_CONCURRENCY", "6")
     if settings.MINIMAX_API_KEY:
         env["MINIMAX_API_KEY"] = settings.MINIMAX_API_KEY
     env.setdefault("MINIMAX_BASE_URL", settings.MINIMAX_BASE_URL or "https://api.minimax.chat/v1")

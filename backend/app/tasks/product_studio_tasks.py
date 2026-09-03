@@ -74,6 +74,9 @@ def _bridge_env(settings) -> None:
     os.environ.setdefault("AGENT_PLATFORM_LLM_API_KEY", settings.DEEPSEEK_API_KEY)
     os.environ.setdefault("AGENT_PLATFORM_LLM_BASE_URL", settings.DEEPSEEK_BASE_URL)
     os.environ.setdefault("AGENT_PLATFORM_LLM_MODEL", settings.DEEPSEEK_MODEL)
+    # 生图并发（image_gen.py 读 IMAGE_CONCURRENCY）：3→6，PPT 页并发对齐；
+    # 自适应退避仍在（429 减半），保质量前提下压缩 ppt_design 段耗时
+    os.environ.setdefault("IMAGE_CONCURRENCY", "6")
     # MOD（amazon_matrix_mod.llm_interpret）直读 DEEPSEEK_* 环境变量
     if settings.DEEPSEEK_API_KEY:
         os.environ.setdefault("DEEPSEEK_API_KEY", settings.DEEPSEEK_API_KEY)
@@ -254,6 +257,9 @@ def _claim_product_run(product_id: str, *, allow_retry: bool) -> tuple[str, str 
             return "running", None
         if product.status == StudioProductStatus.PAUSED:
             return "paused", None
+        # 用户取消是终态：acks_late 重投/任何重试都不得复活。
+        if product.status == StudioProductStatus.CANCELLED:
+            return "cancelled", None
 
         allowed = [StudioProductStatus.QUEUED, StudioProductStatus.WAITING_APPROVAL]
         if allow_retry:
@@ -284,7 +290,7 @@ def _claim_product_run(product_id: str, *, allow_retry: bool) -> tuple[str, str 
     soft_time_limit=60 * 50,
     time_limit=60 * 70,
 )
-def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
+def run_product_studio_pipeline(self: ProductStudioTask, product_id: str, auto_approve: bool = False):
     """
     执行 Product Studio 流水线：
 
@@ -305,6 +311,9 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
     if action == "paused":
         logger.info("[Product Studio] product=%s 已暂停，忽略重复投递", product_id)
         return {"product_id": product_id, "status": "paused", "duplicate": True}
+    if action == "cancelled":
+        logger.info("[Product Studio] product=%s 已被用户取消，忽略重复投递", product_id)
+        return {"product_id": product_id, "status": "cancelled", "duplicate": True}
 
     # 运行锁（DB 状态机之外的第二道防线）：同产品重复投递在状态窗口漏防时，
     # 仅持锁任务执行（TTL 900s，心跳续期；终态显式释放）
@@ -440,6 +449,9 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         # P0.4 大纲确认门：presentation 页清单批准后再进入 critic+逐页创作
         if settings.OUTLINE_REVIEW and "presentation" not in gate_nodes:
             gate_nodes.append("presentation")
+        # 自动过门：跳过所有审批门（产物仍落库可回看，只是不再暂停等待人工）
+        if auto_approve:
+            gate_nodes = []
         extra_initial: dict = {"product_id": str(product_id), "_gate_nodes": gate_nodes}
         # MOD 数据源/抓取量覆盖（MOD_SOURCE=mock 供 0-credit 预演/测试；缺省 rainforest）。
         # 仅 QX_ENV=e2e 时生效：E2E worker 与生产任务共用队列时，防止 mock 夹具
@@ -530,7 +542,11 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str):
         return {"product_id": product_id, "status": "running", "note": "soft_timeout"}
     except Exception as exc:  # noqa: BLE001 —— 记录失败，允许 Celery 重试
         current_status = _get_product_status(product_id)
-        if current_status in (StudioProductStatus.PAUSED, StudioProductStatus.FAILED):
+        if current_status in (
+            StudioProductStatus.PAUSED,
+            StudioProductStatus.FAILED,
+            StudioProductStatus.CANCELLED,
+        ):
             logger.info("[Product Studio] product=%s 已被用户终止，忽略旧任务异常", product_id)
             return {"product_id": product_id, "status": current_status.value}
         logger.exception("[Product Studio] product=%s 流水线失败", product_id)
