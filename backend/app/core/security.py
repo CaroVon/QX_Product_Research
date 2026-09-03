@@ -65,13 +65,24 @@ async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """认证依赖：校验 Authorization: Bearer <token>，返回 User 记录。
+    """认证依赖（优先级从高到低）：
+
+    1. 服务间认证：X-QX-Service-Key 匹配 + X-QX-User 用户头 —— nginx 在
+       auth_request 校验 deer-flow JWT 后注入（浏览器路径），或 qx_tools
+       服务调用携带。用户身份以 deer-flow 为唯一源（R4 认证统一）。
+    2. Authorization: Bearer <token>（本地签发，遗留/测试路径）。
 
     AUTH_ENABLED=false 时（本地开发）自动放行演示用户。
     """
     settings = get_settings()
     if not settings.AUTH_ENABLED:
         return await _resolve_user(db, settings.AUTH_ADMIN_USERNAME)
+
+    service_key = request.headers.get("X-QX-Service-Key", "")
+    if service_key and settings.QX_SERVICE_KEY and hmac.compare_digest(service_key, settings.QX_SERVICE_KEY):
+        user_email = (request.headers.get("X-QX-User") or "").strip()
+        if user_email:
+            return await _resolve_user(db, user_email)
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):

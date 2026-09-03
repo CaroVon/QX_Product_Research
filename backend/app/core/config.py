@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     AUTH_ADMIN_PASSWORD: str = Field(default="admin")
     # 本地开发便利：允许 POST /auth/bootstrap 免密签发 token；生产置 false
     AUTH_BOOTSTRAP: bool = Field(default=True)
+    # 服务间认证：nginx(gateway JWT 校验后)/qx_tools 以此密钥 + X-QX-User 头代表用户访问
+    QX_SERVICE_KEY: str = Field(default="")
     AUTH_TOKEN_TTL_HOURS: int = Field(default=24)
 
     # ─── 节点级 Plan/Act 门（可配置，逗号分隔节点名，如 "research,strategy"） ──
