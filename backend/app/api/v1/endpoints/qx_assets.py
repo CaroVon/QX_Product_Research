@@ -35,7 +35,7 @@ router = APIRouter(prefix="/assets", tags=["qx-assets"])
 
 
 class AssetGenerateRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=2000, description="生图提示词")
+    prompt: str = Field(..., min_length=1, max_length=8000, description="生图提示词（四段式组装，上限 8K）")
     project_id: str | None = Field(default=None, description="可选，挂载的 QX 任务 ID")
     name: str | None = Field(default=None, max_length=200, description="展示名（默认取提示词前 40 字）")
     thread_id: str | None = Field(default=None, max_length=64, description="发起会话 ID（前端直发时携带）")
