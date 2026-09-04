@@ -49,6 +49,8 @@ def generate_standalone_image(self, asset_id: str, prompt: str, product_id: str 
     """生成一张独立产品/概念图，产物与状态持久化到 qx_assets。"""
     settings = get_settings()
     _set_asset(asset_id, status="running")
+    # MiniMax 等生图后端普遍限制 prompt 长度（实测 1500），统一防御截断保首部
+    prompt = prompt[:1490]
     try:
         if product_id:
             file_rel, meta = _generate_via_design_studio(product_id, prompt)
