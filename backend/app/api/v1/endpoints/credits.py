@@ -51,7 +51,8 @@ async def get_balance(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return {"user": user.username, "balances": await svc.balance_map(db, user.id)}
+    return {"user": user.username, "unlimited": _is_admin(user),
+            "balances": await svc.balance_map(db, user.id)}
 
 
 @router.get("/ledger")

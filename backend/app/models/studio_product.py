@@ -73,6 +73,10 @@ class StudioProduct(Base):
     celery_task_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, doc="Celery 流水线任务 ID（用于取消/追踪）"
     )
+    # 提交任务的聊天会话（W7 session 分离；NULL=历史/页面直提）
+    thread_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, doc="发起会话 ID"
+    )
     progress_log: Mapped[str | None] = mapped_column(
         Text, nullable=True, doc="执行进度事件日志（JSON Lines，供前端真实进度展示）"
     )

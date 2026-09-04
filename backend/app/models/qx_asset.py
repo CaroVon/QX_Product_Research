@@ -45,6 +45,9 @@ class QxAsset(Base):
     # 归属用户（users.id；NULL=旧数据，列表对所有人可见——与 studio_products 同语义）
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUIDType, nullable=True, index=True,
                                                        doc="归属用户")
+    # 发起的聊天会话（deer-flow thread_id；NULL=历史/非会话来源）
+    thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True,
+                                                  doc="发起会话 ID")
     error: Mapped[str | None] = mapped_column(Text, nullable=True, doc="失败原因")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=func.now(),

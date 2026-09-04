@@ -47,15 +47,26 @@ async def record(
     return entry
 
 
+def is_admin(user: User) -> bool:
+    """QX_ADMIN_EMAILS 命中即管理员（无限额：记账不拦截）。"""
+    admins = {a.strip() for a in (get_settings().QX_ADMIN_EMAILS or "").split(",") if a.strip()}
+    return (getattr(user, "username", "") or "") in admins
+
+
 async def consume(
     db: AsyncSession, user: User, kind: str, amount: int,
     reason: str = "", meta: dict | None = None, *, enforce: bool = True,
 ) -> tuple[bool, int]:
-    """消耗额度；enforce 类型余额不足时拒绝（返回 False 与当前余额）。"""
+    """消耗额度；enforce 类型余额不足时拒绝（返回 False 与当前余额）。
+
+    管理员（QX_ADMIN_EMAILS）无限额：照常记账、永不拒绝。
+    """
     if amount <= 0:
         return True, 0
     balances = await balance_map(db, user.id)
     left = balances.get(kind, 0)
+    if is_admin(user):
+        enforce = False
     if enforce and left < amount:
         return False, left
     await record(db, user.id, kind, -amount, reason, meta)

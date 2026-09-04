@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,6 +183,7 @@ def _to_asset_response(product: StudioProduct) -> ProductAssetResponse:
 @router.post("/create", response_model=ProductCreateResponse, status_code=201)
 async def create_product(
     body: ProductCreateRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -241,6 +242,7 @@ async def create_product(
             idea_hash=idea_hash,
             status=StudioProductStatus.QUEUED,
             owner_id=user.id,
+            thread_id=(request.headers.get("X-QX-Thread", "").strip() or None),
             theme_id=(body.theme_id or None) or None,
             style_id=(body.style_id or None) or None,
         )
@@ -352,6 +354,69 @@ async def list_products(
         )
         for p in products
     ]
+
+
+@router.get("/tasks-by-threads")
+async def get_tasks_by_threads(
+    ids: str = Query(..., description="逗号分隔的 thread_id（≤50 个）"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按会话批量查询任务状态（W7 session 列表指示）：每 thread 的最新任务与资产计数。"""
+    from sqlalchemy import func as _f
+
+    from app.models.qx_asset import QxAsset
+
+    thread_ids = [t.strip() for t in ids.split(",") if t.strip()][:50]
+    if not thread_ids:
+        return {"tasks": {}}
+    base = select(StudioProduct)
+    if user.username not in {a.strip() for a in (get_settings().QX_ADMIN_EMAILS or "").split(",") if a.strip()}:
+        base = base.where(StudioProduct.owner_id == user.id)
+    jobs = (await db.execute(
+        base.where(StudioProduct.thread_id.in_(thread_ids))
+        .order_by(StudioProduct.created_at.desc())
+    )).scalars().all()
+    done_counts: dict[str, int] = {}
+    active_counts: dict[str, int] = {}
+    kw_counts: dict[str, int] = {}
+    rows = (await db.execute(
+        select(QxAsset.thread_id, QxAsset.kind, QxAsset.status, _f.count(QxAsset.id))
+        .where(QxAsset.thread_id.in_(thread_ids))
+        .group_by(QxAsset.thread_id, QxAsset.kind, QxAsset.status)
+    )).all()
+    for tid, kind, st, n in rows:
+        if st == "done" and kind == "image":
+            done_counts[str(tid)] = done_counts.get(str(tid), 0) + int(n)
+        elif st == "done" and kind == "keywords":
+            kw_counts[str(tid)] = kw_counts.get(str(tid), 0) + int(n)
+        elif st in ("pending", "running"):
+            active_counts[str(tid)] = active_counts.get(str(tid), 0) + int(n)
+    tasks: dict[str, dict] = {}
+    for j in jobs:
+        tid = j.thread_id
+        if tid in tasks:
+            continue
+        tasks[tid] = {
+            "job_id": str(j.id),
+            "idea": j.idea[:80],
+            "status": j.status.value,
+            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
+            "done_images": done_counts.get(tid, 0),
+            "generating": active_counts.get(tid, 0),
+        }
+    for tid in thread_ids:
+        if tid in tasks:
+            continue
+        if active_counts.get(tid):
+            tasks[tid] = {"job_id": None, "idea": None, "status": "generating",
+                          "updated_at": None, "done_images": done_counts.get(tid, 0),
+                          "generating": active_counts[tid]}
+        elif done_counts.get(tid) or kw_counts.get(tid):
+            tasks[tid] = {"job_id": None, "idea": None, "status": "assets_only",
+                          "updated_at": None, "done_images": done_counts.get(tid, 0),
+                          "generating": 0}
+    return {"tasks": tasks}
 
 
 @router.get("/{product_id}", response_model=ProductAssetResponse)

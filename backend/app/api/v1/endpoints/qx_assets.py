@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +38,43 @@ class AssetGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=2000, description="生图提示词")
     project_id: str | None = Field(default=None, description="可选，挂载的 QX 任务 ID")
     name: str | None = Field(default=None, max_length=200, description="展示名（默认取提示词前 40 字）")
+    thread_id: str | None = Field(default=None, max_length=64, description="发起会话 ID（前端直发时携带）")
+
+
+def _thread_of(request: Request, explicit: str | None) -> str | None:
+    """会话关联：显式参数优先，其次 qx_tools 服务头 X-QX-Thread。"""
+    return (explicit or "").strip() or request.headers.get("X-QX-Thread", "").strip() or None
+
+
+def _sanitize_schema(schema: dict) -> dict:
+    """Schema v2 深度清洗（长度/数量限制，防滥用）。"""
+    import json as _json
+
+    raw = _json.dumps(schema, ensure_ascii=False, default=str)
+    if len(raw) > 60000:
+        raise HTTPException(status_code=422, detail="schema 过大（>60KB）")
+    out: dict = {"layers": []}
+    for layer in (schema.get("layers") or [])[:12]:
+        out["layers"].append({
+            "key": str(layer.get("key", "misc"))[:32],
+            "items": [
+                {
+                    "zh": str(it.get("zh") or "")[:120],
+                    "en": str(it.get("en") or "")[:240],
+                    "visualizability": max(0, min(3, int(it.get("visualizability") or 0))),
+                    "priority": "must" if it.get("priority") == "must" else "optional",
+                    "source": [str(x)[:60] for x in (it.get("source") or [])][:5],
+                }
+                for it in (layer.get("items") or [])[:20]
+            ],
+        })
+    if schema.get("conflicts"):
+        out["conflicts"] = schema["conflicts"][:10]
+    if schema.get("positioning"):
+        out["positioning"] = schema["positioning"]
+    if schema.get("spec_tree"):
+        out["spec_tree"] = str(schema["spec_tree"])[:4000]
+    return out
 
 
 class AssetAttachRequest(BaseModel):
@@ -45,20 +82,24 @@ class AssetAttachRequest(BaseModel):
 
 
 class KeywordAssetCreateRequest(BaseModel):
-    """关键词资产（5 组：design/function/appearance/audience/scenario）。"""
-    groups: dict[str, list[str]] = Field(..., description="组名 → 关键词列表")
+    """关键词资产。Schema v2（8 层结构化）兼容旧 5 组格式。"""
+    groups: dict[str, list[str]] | None = Field(default=None, description="旧格式：组名 → 关键词列表")
+    schema: dict | None = Field(default=None, description="Schema v2：{layers, conflicts, positioning, spec_tree}")
     name: str | None = Field(default=None, max_length=200)
     project_id: str | None = Field(default=None)
+    thread_id: str | None = Field(default=None)
 
 
 class KeywordAssetUpdateRequest(BaseModel):
-    groups: dict[str, list[str]] = Field(..., description="组名 → 关键词列表")
+    groups: dict[str, list[str]] | None = Field(default=None, description="旧格式：组名 → 关键词列表")
+    schema: dict | None = Field(default=None, description="Schema v2（编辑后整体回传）")
 
 
 def _asset_dict(a: QxAsset) -> dict:
     return {
         "id": str(a.id),
         "owner_id": str(a.owner_id) if a.owner_id else None,
+        "thread_id": a.thread_id,
         "kind": a.kind,
         "origin": a.origin,
         "status": a.status,
@@ -77,6 +118,7 @@ def _asset_dict(a: QxAsset) -> dict:
 @router.post("/generate")
 async def generate_asset(
     body: AssetGenerateRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -109,6 +151,7 @@ async def generate_asset(
         prompt=body.prompt,
         project_id=project_uuid,
         owner_id=user.id,
+        thread_id=_thread_of(request, body.thread_id),
     )
     db.add(asset)
     await db.commit()
@@ -124,11 +167,12 @@ async def list_assets(
     kind: str | None = None,
     project_id: str | None = None,
     status: str | None = None,
+    thread_id: str | None = None,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """资产列表（新→旧）。project_id=none 表示只看未挂载的独立资产。"""
+    """资产列表（新→旧）。project_id=none 只看未挂载；thread_id=none 只看历史（无会话关联）。"""
     q = select(QxAsset).order_by(QxAsset.created_at.desc()).limit(min(limit, 200))
     flt = _owner_filter(user)
     if flt is not None:
@@ -141,6 +185,10 @@ async def list_assets(
         q = q.where(QxAsset.project_id.is_(None))
     elif project_id:
         q = q.where(QxAsset.project_id == uuid.UUID(project_id))
+    if thread_id == "none":
+        q = q.where(QxAsset.thread_id.is_(None))
+    elif thread_id:
+        q = q.where(QxAsset.thread_id == thread_id)
     rows = (await db.execute(q)).scalars().all()
     return {"assets": [_asset_dict(a) for a in rows]}
 
@@ -249,29 +297,49 @@ _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 @router.post("/keywords")
 async def create_keyword_asset(
     body: KeywordAssetCreateRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """保存关键词资产（研究产出 → 设计种子）：独立入库，可挂项目。
 
-    groups 的键通常为 design/function/appearance/audience/scenario，
-    前端「用关键词生图」按组拼接提示词。
+    两种格式：
+    - 旧 5 组：groups={组名: [关键词]}
+    - Schema v2：schema={layers:[{key, items:[{zh,en,visualizability,priority,source}]}],
+      conflicts, positioning, spec_tree}（8 层产品设计规格，双语，评分与冲突元数据）
     """
-    cleaned = {
-        str(k)[:32]: [str(w)[:80] for w in (v or [])][:30]
-        for k, v in (body.groups or {}).items()
-    }
-    if not cleaned:
-        raise HTTPException(status_code=422, detail="关键词组不能为空")
+    meta_obj: dict
+    if body.schema:
+        meta_obj = {"schema_v2": _sanitize_schema(body.schema)}
+        if not meta_obj["schema_v2"].get("layers"):
+            raise HTTPException(status_code=422, detail="schema.layers 不能为空")
+        summary = "; ".join(
+            f"{l.get('key')}: " + "、".join(
+                str(it.get("zh") or it.get("en") or "")[:30]
+                for it in (l.get("items") or [])[:4]
+            )
+            for l in meta_obj["schema_v2"]["layers"][:4]
+        )
+    else:
+        cleaned = {
+            str(k)[:32]: [str(w)[:80] for w in (v or [])][:30]
+            for k, v in (body.groups or {}).items()
+        }
+        if not cleaned:
+            raise HTTPException(status_code=422, detail="关键词组不能为空")
+        meta_obj = {"groups": cleaned}
+        summary = "; ".join(f"{k}: {'、'.join(v[:4])}" for k, v in list(cleaned.items())[:4])
     asset = QxAsset(
         kind="keywords",
         origin="agent",
         status="done",
         name=body.name or "关键词资产",
-        prompt=json.dumps(cleaned, ensure_ascii=False),
-        meta=json.dumps({"groups": cleaned}, ensure_ascii=False),
+        prompt=("[Schema v2] " + summary[:3800]) if body.schema else json.dumps(
+            meta_obj.get("groups", {}), ensure_ascii=False),
+        meta=json.dumps({**meta_obj, "summary": summary[:200]}, ensure_ascii=False),
         project_id=uuid.UUID(body.project_id) if body.project_id else None,
         owner_id=user.id,
+        thread_id=_thread_of(request, body.thread_id),
     )
     db.add(asset)
     await db.commit()
@@ -286,16 +354,23 @@ async def update_keyword_asset(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """更新关键词资产（聊天面板内联编辑后的保存）。"""
+    """更新关键词资产（聊天面板内联编辑后的保存，兼容两种格式）。"""
     a = await db.get(QxAsset, asset_id)
     if a is None or a.kind != "keywords":
         raise HTTPException(status_code=404, detail="关键词资产不存在")
-    cleaned = {
-        str(k)[:32]: [str(w)[:80] for w in (v or [])][:30]
-        for k, v in (body.groups or {}).items()
-    }
-    a.prompt = json.dumps(cleaned, ensure_ascii=False)
-    a.meta = json.dumps({"groups": cleaned}, ensure_ascii=False)
+    if body.schema:
+        meta_obj = {"schema_v2": _sanitize_schema(body.schema)}
+    elif body.groups:
+        meta_obj = {"groups": {
+            str(k)[:32]: [str(w)[:80] for w in (v or [])][:30]
+            for k, v in body.groups.items()
+        }}
+    else:
+        raise HTTPException(status_code=422, detail="groups 与 schema 至少提供一项")
+    old_meta = json.loads(a.meta or "{}")
+    a.meta = json.dumps({**old_meta, **meta_obj}, ensure_ascii=False)
+    if "groups" in meta_obj:
+        a.prompt = json.dumps(meta_obj["groups"], ensure_ascii=False)
     a.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(a)
