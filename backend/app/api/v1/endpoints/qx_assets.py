@@ -58,6 +58,7 @@ class KeywordAssetUpdateRequest(BaseModel):
 def _asset_dict(a: QxAsset) -> dict:
     return {
         "id": str(a.id),
+        "owner_id": str(a.owner_id) if a.owner_id else None,
         "kind": a.kind,
         "origin": a.origin,
         "status": a.status,
@@ -79,12 +80,26 @@ async def generate_asset(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """提交独立生图（异步 Celery），立即返回资产 ID 供轮询。"""
+    """提交独立生图（异步 Celery），立即返回资产 ID 供轮询。
+
+    计费（W3-4）：预检 image 余额并即时扣减 1 张；生成失败由任务侧退补。
+    内容安全（W5-6）：prompt 黑名单拦截。
+    """
+    from app.services.content_safety import check_prompt
+    from app.services.credits import consume
     from app.tasks.asset_tasks import generate_standalone_image
+
+    violation = check_prompt(body.prompt)
+    if violation:
+        raise HTTPException(status_code=422, detail=violation)
 
     project_uuid: uuid.UUID | None = None
     if body.project_id:
         project_uuid = uuid.UUID(body.project_id)  # 非法 ID 直接 422
+
+    ok, left = await consume(db, user, "image", 1, f"独立生图", None)
+    if not ok:
+        raise HTTPException(status_code=402, detail=f"生图额度不足（剩 {left} 张）：请联系管理员补充")
 
     asset = QxAsset(
         kind="image",
@@ -93,13 +108,14 @@ async def generate_asset(
         name=(body.name or body.prompt[:40] or "独立生图"),
         prompt=body.prompt,
         project_id=project_uuid,
+        owner_id=user.id,
     )
     db.add(asset)
     await db.commit()
     await db.refresh(asset)
 
     generate_standalone_image.delay(str(asset.id), body.prompt, body.project_id or "")
-    logger.info("[qx-assets] 生图已派发 | asset=%s | project=%s", asset.id, project_uuid)
+    logger.info("[qx-assets] 生图已派发 | asset=%s | project=%s | user=%s", asset.id, project_uuid, user.username)
     return {"generation_id": str(asset.id), "status": asset.status, "asset": _asset_dict(asset)}
 
 
@@ -114,6 +130,9 @@ async def list_assets(
 ):
     """资产列表（新→旧）。project_id=none 表示只看未挂载的独立资产。"""
     q = select(QxAsset).order_by(QxAsset.created_at.desc()).limit(min(limit, 200))
+    flt = _owner_filter(user)
+    if flt is not None:
+        q = q.where(flt)
     if kind:
         q = q.where(QxAsset.kind == kind)
     if status:
@@ -124,6 +143,43 @@ async def list_assets(
         q = q.where(QxAsset.project_id == uuid.UUID(project_id))
     rows = (await db.execute(q)).scalars().all()
     return {"assets": [_asset_dict(a) for a in rows]}
+
+
+@router.get("/images-zip")
+async def download_images_zip(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """导出我的全部已完成生图为 ZIP（作品集图片包）。"""
+    import io
+    import zipfile
+    from pathlib import Path
+
+    from fastapi.responses import Response
+    from app.core.config import get_settings
+
+    q = select(QxAsset).where(
+        QxAsset.kind == "image", QxAsset.status == "done",
+        QxAsset.file_rel.is_not(None), QxAsset.owner_id == user.id,
+    ).order_by(QxAsset.created_at.desc()).limit(200)
+    assets = (await db.execute(q)).scalars().all()
+    if not assets:
+        raise HTTPException(status_code=404, detail="暂无可导出的生图作品")
+
+    out_dir = Path(get_settings().OUTPUT_DIR)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, a in enumerate(assets, 1):
+            fp = out_dir / a.file_rel
+            if fp.is_file():
+                ext = fp.suffix or ".png"
+                zf.write(fp, f"作品_{i:03d}_{(a.name or 'generated')[:30]}{ext}")
+    logger.info("[qx-assets] 作品 ZIP | user=%s | %d 张", user.username, len(assets))
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="qx_portfolio_{user.username.split("@")[0]}.zip"'},
+    )
 
 
 @router.get("/{asset_id}")
@@ -171,6 +227,18 @@ async def attach_asset(
     return _asset_dict(a)
 
 
+def _is_admin(user) -> bool:
+    from app.core.config import get_settings
+    admins = {x.strip() for x in (get_settings().QX_ADMIN_EMAILS or "").split(",") if x.strip()}
+    return (user.username or "") in admins
+
+
+def _owner_filter(user):
+    """列表归属过滤：本人可见自己的；admin 全览；旧数据（owner NULL）所有人可见。"""
+    from sqlalchemy import or_
+    return or_(QxAsset.owner_id == user.id, QxAsset.owner_id.is_(None)) if not _is_admin(user) else None
+
+
 _ALLOWED_UPLOAD_EXT = {
     ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
     ".pdf", ".md", ".txt", ".docx", ".pptx", ".csv", ".json", ".xlsx",
@@ -203,6 +271,7 @@ async def create_keyword_asset(
         prompt=json.dumps(cleaned, ensure_ascii=False),
         meta=json.dumps({"groups": cleaned}, ensure_ascii=False),
         project_id=uuid.UUID(body.project_id) if body.project_id else None,
+        owner_id=user.id,
     )
     db.add(asset)
     await db.commit()
@@ -231,6 +300,10 @@ async def update_keyword_asset(
     await db.commit()
     await db.refresh(a)
     return _asset_dict(a)
+
+
+
+
 
 
 @router.post("/upload")
@@ -269,6 +342,7 @@ async def upload_asset(
         file_rel=str(dest.relative_to(settings.OUTPUT_DIR)),
         project_id=uuid.UUID(project_id) if project_id else None,
         meta=json.dumps({"upload_filename": file.filename, "size": size}, ensure_ascii=False),
+        owner_id=user.id,
     )
     db.add(asset)
     await db.commit()

@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     AUTH_BOOTSTRAP: bool = Field(default=True)
     # 服务间认证：nginx(gateway JWT 校验后)/qx_tools 以此密钥 + X-QX-User 头代表用户访问
     QX_SERVICE_KEY: str = Field(default="")
+    # ── W3-4 计费底座 ──
+    QX_ADMIN_EMAILS: str = Field(default="admin@deerflow.qxdev.com", doc="管理员 email 逗号分隔（全览/配额管理）")
+    CREDITS_INITIAL_LLM_TOKENS: int = Field(default=500_000)
+    CREDITS_INITIAL_IMAGES: int = Field(default=20)
+    CREDITS_INITIAL_RAINFOREST: int = Field(default=50)
+    DEERFLOW_DB_PATH: str = Field(
+        default="/home/administrator/dev/agents/qx-deerflow/deer-flow/backend/.deer-flow/data/deerflow.db",
+        doc="gateway sqlite（LLM 用量同步只读）")
     AUTH_TOKEN_TTL_HOURS: int = Field(default=24)
 
     # ─── 节点级 Plan/Act 门（可配置，逗号分隔节点名，如 "research,strategy"） ──

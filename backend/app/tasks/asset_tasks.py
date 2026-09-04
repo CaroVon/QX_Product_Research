@@ -60,6 +60,7 @@ def generate_standalone_image(self, asset_id: str, prompt: str, product_id: str 
         return {"asset_id": asset_id, "status": "done", "file_rel": file_rel}
     except Exception as exc:  # noqa: BLE001
         _set_asset(asset_id, status="failed", error=str(exc)[:500])
+        _refund_image(asset_id)
         logger.warning("[qx-assets] 生图失败 | asset=%s | %s", asset_id, exc)
         return {"asset_id": asset_id, "status": "failed", "error": str(exc)[:500]}
 
@@ -107,3 +108,31 @@ def _generate_via_design_studio(product_id: str, prompt: str) -> tuple[str, dict
     if not file_rel:
         raise RuntimeError("design-studio 生图未返回图片 URL")
     return file_rel, {"channel": "design-studio", "item_id": item["id"], "product_id": product_id}
+
+
+def _refund_image(asset_id: str) -> None:
+    """生图失败退补 1 张额度（找资产 owner）。"""
+    import uuid as _uuid
+    from sqlalchemy import select
+
+    from app.models.qx_asset import QxAsset
+
+    try:
+        with get_sync_engine().connect() as conn:
+            row = conn.execute(
+                select(QxAsset.owner_id).where(QxAsset.id == _uuid.UUID(asset_id))
+            ).fetchone()
+        if row is None or row[0] is None:
+            return
+        from app.core.database import get_sync_session_factory  # noqa: F401
+        from sqlalchemy.orm import Session
+        with Session(get_sync_engine()) as session:
+            from app.models.credit_ledger import CreditLedger
+            session.add(CreditLedger(
+                user_id=row[0], kind="image", delta=1,
+                reason=f"生图失败退补", meta=f'{{"asset_id": "{asset_id}"}}',
+            ))
+            session.commit()
+        logger.info("[qx-assets] 额度退补 | asset=%s", asset_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[qx-assets] 退补失败 | asset=%s | %s", asset_id, exc)

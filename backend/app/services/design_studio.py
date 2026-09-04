@@ -572,6 +572,10 @@ def generate_image_for_item(product_id: str, item_id: str, *, timeout: int = 360
         raise KeyError(item_id)
 
     prompt = _build_prompt(library, item)
+    from app.services.content_safety import check_prompt
+    violation = check_prompt(f"{item.get('text', '')} {prompt}")
+    if violation:
+        raise RuntimeError(violation)
     item["prompt"] = prompt
 
     script = _image_gen_script()

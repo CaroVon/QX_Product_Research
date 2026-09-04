@@ -110,4 +110,11 @@ async def _resolve_user(db: AsyncSession, username: str) -> User:
         db.add(user)
         await db.commit()
         await db.refresh(user)
+        # W3-4：注册赠送（首次映射落库时一次性播种；失败不阻断认证）
+        try:
+            from app.services.credits import seed_initial_credits
+            await seed_initial_credits(db, user.id)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("credits seed failed for %s: %s", username, exc)
     return user
