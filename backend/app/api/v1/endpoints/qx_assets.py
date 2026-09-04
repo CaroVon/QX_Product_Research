@@ -35,7 +35,12 @@ router = APIRouter(prefix="/assets", tags=["qx-assets"])
 
 
 class AssetGenerateRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=8000, description="生图提示词（四段式组装，上限 8K）")
+    # 推荐入参：由 Prompt Forge 后端统一组装（与 agent 路径同源）
+    schema_asset_id: str | None = Field(default=None, description="关键词资产 ID（Schema v2）→ 后端组装")
+    view: str | None = Field(default=None, description="视图：atlas/hero/ortho/detail/cutaway（默认 atlas）")
+    style_key: str | None = Field(default=None, description="风格预设 key（默认 auto）")
+    # 兼容入参：裸 prompt 直发
+    prompt: str | None = Field(default=None, max_length=8000, description="生图提示词（直发模式）")
     project_id: str | None = Field(default=None, description="可选，挂载的 QX 任务 ID")
     name: str | None = Field(default=None, max_length=200, description="展示名（默认取提示词前 40 字）")
     thread_id: str | None = Field(default=None, max_length=64, description="发起会话 ID（前端直发时携带）")
@@ -124,14 +129,43 @@ async def generate_asset(
 ):
     """提交独立生图（异步 Celery），立即返回资产 ID 供轮询。
 
+    两条入参路径：
+    - 推荐：schema_asset_id + view + style_key → Prompt Forge 统一组装（前后端/agent 同源，
+      带预算报告，meta.forge_report 可审计）
+    - 兼容：裸 prompt 直发
     计费（W3-4）：预检 image 余额并即时扣减 1 张；生成失败由任务侧退补。
     内容安全（W5-6）：prompt 黑名单拦截。
     """
+    import json as _json
+
     from app.services.content_safety import check_prompt
     from app.services.credits import consume
+    from app.services.prompt_forge import DEFAULT_VIEW, VIEW_SPECS, build_prompt
     from app.tasks.asset_tasks import generate_standalone_image
 
-    violation = check_prompt(body.prompt)
+    forge_report = None
+    if body.schema_asset_id:
+        kw = await db.get(QxAsset, uuid.UUID(body.schema_asset_id))
+        if kw is None or kw.kind != "keywords":
+            raise HTTPException(status_code=404, detail="关键词资产不存在")
+        schema_obj = ((kw.meta and _json.loads(kw.meta)) or {}).get("schema_v2")
+        if not schema_obj:
+            raise HTTPException(status_code=422, detail="该关键词资产不是 Schema v2 格式")
+        view = body.view if body.view in VIEW_SPECS else DEFAULT_VIEW
+        prompt, forge_report = build_prompt(
+            schema_obj, view, body.style_key or "auto",
+            image_backend=__import__("os").environ.get("IMAGE_BACKEND", "minimax"),
+        )
+        label = VIEW_SPECS[view]["label"]
+        name = body.name or f"{label}·{kw.name or ''}"[:60]
+    else:
+        prompt = body.prompt or ""
+        view = body.view or DEFAULT_VIEW
+        name = body.name or (prompt[:40] or "独立生图")
+    if not prompt:
+        raise HTTPException(status_code=422, detail="prompt 与 schema_asset_id 至少提供一项")
+
+    violation = check_prompt(prompt)
     if violation:
         raise HTTPException(status_code=422, detail=violation)
 
@@ -139,27 +173,34 @@ async def generate_asset(
     if body.project_id:
         project_uuid = uuid.UUID(body.project_id)  # 非法 ID 直接 422
 
-    ok, left = await consume(db, user, "image", 1, f"独立生图", None)
+    ok, left = await consume(db, user, "image", 1, f"独立生图({view})", None)
     if not ok:
         raise HTTPException(status_code=402, detail=f"生图额度不足（剩 {left} 张）：请联系管理员补充")
 
+    meta_obj: dict = {}
+    if forge_report:
+        meta_obj["forge_report"] = forge_report
     asset = QxAsset(
         kind="image",
         origin="agent",
         status="pending",
-        name=(body.name or body.prompt[:40] or "独立生图"),
-        prompt=body.prompt,
+        name=name,
+        prompt=prompt,
         project_id=project_uuid,
         owner_id=user.id,
         thread_id=_thread_of(request, body.thread_id),
+        meta=_json.dumps(meta_obj, ensure_ascii=False) if meta_obj else None,
     )
     db.add(asset)
     await db.commit()
     await db.refresh(asset)
 
-    generate_standalone_image.delay(str(asset.id), body.prompt, body.project_id or "")
-    logger.info("[qx-assets] 生图已派发 | asset=%s | project=%s | user=%s", asset.id, project_uuid, user.username)
-    return {"generation_id": str(asset.id), "status": asset.status, "asset": _asset_dict(asset)}
+    generate_standalone_image.delay(str(asset.id), prompt, body.project_id or "")
+    logger.info("[qx-assets] 生图已派发 | asset=%s | project=%s | user=%s | forge=%s | len=%s",
+                asset.id, project_uuid, user.username,
+                forge_report and forge_report.get("forge_version"), len(prompt))
+    return {"generation_id": str(asset.id), "status": asset.status, "asset": _asset_dict(asset),
+            "forge_report": forge_report}
 
 
 @router.get("")
@@ -191,6 +232,71 @@ async def list_assets(
         q = q.where(QxAsset.thread_id == thread_id)
     rows = (await db.execute(q)).scalars().all()
     return {"assets": [_asset_dict(a) for a in rows]}
+
+
+class SuiteGenerateRequest(BaseModel):
+    schema_asset_id: str = Field(..., description="关键词资产 ID（Schema v2）")
+    views: list[str] = Field(default_factory=lambda: ["atlas", "hero", "ortho", "detail"])
+    style_key: str = Field(default="auto")
+    project_id: str | None = Field(default=None)
+    thread_id: str | None = Field(default=None)
+
+
+@router.post("/generate-suite")
+async def generate_asset_suite(
+    body: SuiteGenerateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """一键套装（W7+Prompt Forge）：后端按视图循环组装提交，返回逐视图结果与预算报告。"""
+    import json as _json
+
+    from app.services.content_safety import check_prompt
+    from app.services.credits import consume
+    from app.services.prompt_forge import DEFAULT_VIEW, VIEW_SPECS, build_prompt
+    from app.tasks.asset_tasks import generate_standalone_image
+
+    kw = await db.get(QxAsset, uuid.UUID(body.schema_asset_id))
+    if kw is None or kw.kind != "keywords":
+        raise HTTPException(status_code=404, detail="关键词资产不存在")
+    schema_obj = ((kw.meta and _json.loads(kw.meta)) or {}).get("schema_v2")
+    if not schema_obj:
+        raise HTTPException(status_code=422, detail="该关键词资产不是 Schema v2 格式")
+
+    views = [v for v in body.views if v in VIEW_SPECS] or [DEFAULT_VIEW]
+    # 预检组装（长度/黑名单先过一遍再扣额度）
+    forged = []
+    for v in views:
+        prompt, report = build_prompt(
+            schema_obj, v, body.style_key,
+            image_backend=__import__("os").environ.get("IMAGE_BACKEND", "minimax"),
+        )
+        violation = check_prompt(prompt)
+        if violation:
+            raise HTTPException(status_code=422, detail=f"{VIEW_SPECS[v]['label']}: {violation}")
+        forged.append((v, prompt, report))
+
+    ok, left = await consume(db, user, "image", len(forged), f"套装生图 x{len(forged)}", {"kw": body.schema_asset_id})
+    if not ok:
+        raise HTTPException(status_code=402, detail=f"生图额度不足（套装需 {len(forged)} 张，剩 {left} 张）：请联系管理员补充")
+
+    thread_id = _thread_of(request, body.thread_id)
+    project_uuid = uuid.UUID(body.project_id) if body.project_id else None
+    results = []
+    for v, prompt, report in forged:
+        asset = QxAsset(
+            kind="image", origin="agent", status="pending",
+            name=f"{VIEW_SPECS[v]['label']}·{kw.name or ''}"[:60],
+            prompt=prompt, project_id=project_uuid, owner_id=user.id, thread_id=thread_id,
+            meta=_json.dumps({"forge_report": report}, ensure_ascii=False),
+        )
+        db.add(asset)
+        await db.commit()
+        await db.refresh(asset)
+        generate_standalone_image.delay(str(asset.id), prompt, body.project_id or "")
+        results.append({"view": v, "generation_id": str(asset.id), "forge_report": report})
+    return {"count": len(results), "results": results}
 
 
 @router.get("/images-zip")
