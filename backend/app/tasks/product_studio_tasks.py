@@ -505,6 +505,10 @@ def run_product_studio_pipeline(self: ProductStudioTask, product_id: str, auto_a
             "requirement": snapshot.get("requirement"),
             "research": snapshot.get("research"),
             "competitor_analysis": snapshot.get("competitor_analysis"),
+            # 竞品矩阵必须持久化：大纲门在矩阵节点之后暂停，恢复时矩阵节点已被
+            # 标记完成而跳过——不落盘则 state 断链，ppt_design 的 MOD 图表同步/
+            # 独立 PPT 导出拿到空输入静默弃置（session 9767a5b7 生产事故根因）
+            "competitor_matrix": snapshot.get("competitor_matrix"),
             "strategy": snapshot.get("strategy"),
             "design": snapshot.get("design"),
             "presentation": snapshot.get("presentation"),
