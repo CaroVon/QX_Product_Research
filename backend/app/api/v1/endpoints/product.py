@@ -918,6 +918,70 @@ async def resume_product(
     return {"product_id": str(product.id), "status": "queued", "message": "产品流水线已恢复"}
 
 
+# ppt_design 单独补跑时视为已完成的前置节点（与 product_research_graph 节点名一致）
+_PPT_PREREQ_NODES = [
+    "requirement_parser", "source_gathering", "research", "competitor_matrix",
+    "competitor_analysis", "strategy", "design", "presentation", "critic",
+]
+
+
+@router.post("/{product_id}/retry-ppt")
+async def retry_product_ppt(
+    product_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """PPT 节点单独补跑（presentation 已完成但 ppt_design 渲染失败的产品）。
+
+    合成断点恢复包：全部前置节点标记完成（图内门控跳过），仅重跑 ppt_design+assemble。
+    critic_score 低于阈值时必须把 revision_count 置为修订上限——否则 critic 路由会
+    判定「修订」并因节点全部跳过陷入循环。
+    """
+    product = await db.get(StudioProduct, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="产品不存在")
+    if product.owner_id is not None and product.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="无权访问该产品")
+    if product.status != StudioProductStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail=f"仅已完成的产品支持 PPT 补跑（当前 {product.status.value}）")
+
+    try:
+        package = json.loads(product.asset_package or "{}")
+    except json.JSONDecodeError:
+        package = {}
+    if not package.get("presentation"):
+        raise HTTPException(status_code=422, detail="presentation 未完成，无法单独补跑 PPT")
+
+    from app.core.config import get_settings
+    settings = get_settings()
+    max_revisions = settings.PRESENTATION_MAX_REVISIONS if settings.PRESENTATION_MAX_REVISIONS > 0 else 2
+
+    node_status = dict((package.get("meta") or {}).get("node_status") or {})
+    node_status.update({k: "completed" for k in _PPT_PREREQ_NODES})
+    node_status["ppt_design"] = "running"
+    package.update({
+        "_resume": True,
+        "_completed_nodes": list(_PPT_PREREQ_NODES),
+        "_gate_passed": list(_PPT_PREREQ_NODES),
+        "revision_count": max_revisions,
+        "node_status": node_status,
+    })
+    product.asset_package = json.dumps(package, ensure_ascii=False)
+    product.status = StudioProductStatus.QUEUED
+    product.error_message = None
+    await db.commit()
+
+    from app.tasks.product_studio_tasks import run_product_studio_pipeline
+    task = run_product_studio_pipeline.delay(str(product.id))
+    product.celery_task_id = task.id
+    await db.commit()
+    return {
+        "product_id": str(product.id),
+        "status": "queued",
+        "message": "PPT 补跑已提交（前置节点跳过，仅重跑 ppt_design）",
+    }
+
+
 # ================================================================
 # GET /api/v1/product/{product_id}/logs —— 真实执行事件日志
 # ================================================================
